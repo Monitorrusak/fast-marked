@@ -750,6 +750,7 @@ function indentedFourWithTabsAsFour(s) {
 }
 
 const Y_HR = new RegExp(HR_SRC, 'y');
+const RE_TWO_NEWLINES = /\n.*\n/;
 const Y_LIST_ITEM = {};
 for (const key of Object.keys(LIST_ITEM)) Y_LIST_ITEM[key] = new RegExp(LIST_ITEM[key].source.slice(1), 'y');
 
@@ -798,10 +799,23 @@ function list(src) {
         next = nl === -1 ? src.slice(pos) : src.slice(pos, nl);
         // every break rule is "at most k spaces, then one of these characters"
         if (itemBreak(next, k)) break;
-        const expanded = expandLeadingTabs(next, 0);
-        const nextBlank = isBlank(next);
+        // one look at the leading spaces answers the tab expansion, the first non-space column
+        // and the blank test, unless a tab or another kind of whitespace comes first
+        let sp = 0;
+        while (sp < next.length && next.charCodeAt(sp) === 32) sp++;
+        let expanded = next;
+        let fns = sp < next.length ? sp : -1;
+        let nextBlank = sp === next.length;
+        if (!nextBlank) {
+          const c = next.charCodeAt(sp);
+          if (c === 9) {
+            expanded = expandLeadingTabs(next, 0);
+            fns = firstNonSpace(expanded);
+            nextBlank = isBlank(next);
+          } else if (isJsSpace(c)) nextBlank = isBlank(next);
+        }
         const rest = expanded.slice(indent);
-        if (firstNonSpace(expanded) >= indent || nextBlank) content += '\n' + rest;
+        if (fns >= indent || nextBlank) content += '\n' + rest;
         else {
           if (blank || indentedFourWithTabsAsFour(line) || reFence.test(line) || reHeading.test(line) || reHtml.test(line) || reHr.test(line)) break;
           const add = RE_SETEXT_LINE.test(next) && RE_LHEADING.test(`${line}\n${next}`) ? `    ${expanded.replace(/^ {0,3}/, '')}` : next;
@@ -829,7 +843,7 @@ function list(src) {
     item.tokens = blockTokens(item.text, []);
     if (!token.loose) {
       let loose = false;
-      for (const t of item.tokens) if (t.type === 'space' && /\n.*\n/.test(t.raw)) loose = true;
+      for (const t of item.tokens) if (t.type === 'space' && RE_TWO_NEWLINES.test(t.raw)) loose = true;
       token.loose = loose;
     }
   }
