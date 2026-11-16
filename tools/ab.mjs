@@ -8,10 +8,12 @@ import { pathToFileURL } from 'node:url';
 
 const [a, b, casesFile, runsArg] = process.argv.slice(2);
 const runs = Number(runsArg || 10);
+// AB_FLAGS_A / AB_FLAGS_B: extra V8 flags (space-separated) set at runtime for that side
 const child = `
 import { readFileSync } from 'node:fs';
 import v8 from 'node:v8';
 v8.setFlagsFromString('--no-turbofan');
+for (const f of (process.env.AB_FLAGS || '').split(' ')) if (f) v8.setFlagsFromString(f);
 const { parse } = await import(process.argv[1]);
 const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const u0 = process.cpuUsage();
@@ -23,7 +25,8 @@ const res = { a: [], b: [] };
 for (let r = 0; r < runs; r++) {
   const order = r % 2 ? [['b', b], ['a', a]] : [['a', a], ['b', b]];
   for (const [k, f] of order) {
-    const p = spawnSync(process.execPath, ['--input-type=module', '-e', child, pathToFileURL(resolve(f)).href, resolve(casesFile)], { encoding: 'utf8' });
+    const env = { ...process.env, AB_FLAGS: (k === 'a' ? process.env.AB_FLAGS_A : process.env.AB_FLAGS_B) || '' };
+    const p = spawnSync(process.execPath, ['--input-type=module', '-e', child, pathToFileURL(resolve(f)).href, resolve(casesFile)], { encoding: 'utf8', env });
     if (p.status !== 0) throw new Error(p.stderr);
     res[k].push(Number(p.stdout.trim()));
   }

@@ -8,8 +8,10 @@ import { setFlagsFromString } from 'node:v8';
 // The whole run is one cold pass over ~3 MB of Markdown. TurboFan's background compilations cost
 // more CPU than they save in that time; Maglev (on by default since Node 22) remains the optimizing
 // tier. This only changes how V8 tiers code, never what parse() returns. It must run before
-// parse.js is loaded, hence the dynamic import below.
+// parse.js is loaded, hence the dynamic import below. Growing the young generation faster than the
+// default (x2) means fewer scavenges while the heap fills with short-lived strings.
 setFlagsFromString('--no-turbofan');
+setFlagsFromString('--semi-space-growth-factor=4');
 const { parse } = (await import('./parse.js')) as { parse: (md: string) => string };
 
 const inDir: string = process.env.MAKEFUN_INPUT_DIR || '/input';

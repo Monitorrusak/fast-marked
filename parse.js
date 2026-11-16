@@ -204,11 +204,6 @@ function newQ(src) {
   return q;
 }
 
-// s.charCodeAt(i), or -1 outside the string
-function code(s, i) {
-  return i >>> 0 < s.length ? s.charCodeAt(i) : -1;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Block pass
 
@@ -218,8 +213,8 @@ function blockTokens(src, out, mergePara) {
   let blankAt = -1;
   let setextAt = -1;
   while (pos < len) {
-    // (every charCodeAt in this file stays in bounds: a read past the end returns NaN, which
-    // makes V8 throw away optimized code and compile the function again)
+    // (every charCodeAt in this file stays in bounds -- reads that could run off a string are written
+    // "i < s.length ? s.charCodeAt(i) : -1": a NaN from a read past the end deoptimizes the caller)
     let i = pos;
     let c = src.charCodeAt(i);
     while (c === 32) c = ++i < len ? src.charCodeAt(i) : -1;
@@ -361,8 +356,8 @@ function blockTokens(src, out, mergePara) {
       if (nl !== -1) {
         let k = nl + 1;
         const lim = k + 3;
-        while (k < lim && code(src, k) === 32) k++;
-        const d = code(src, k);
+        while (k < lim && (k < src.length ? src.charCodeAt(k) : -1) === 32) k++;
+        const d = (k < src.length ? src.charCodeAt(k) : -1);
         if (d === 124 || d === 58 || d === 45) {
           const t = table(src, pos);
           if (t !== null) {
@@ -438,8 +433,8 @@ function underlineBefore(src, from, limit) {
   while (j !== -1 && j < limit) {
     let k = j + 1;
     const lim = k + 3;
-    while (k < lim && code(src, k) === 32) k++;
-    const c = code(src, k);
+    while (k < lim && (k < src.length ? src.charCodeAt(k) : -1) === 32) k++;
+    const c = (k < src.length ? src.charCodeAt(k) : -1);
     if (c === 61 || c === 45) return j;
     j = src.indexOf('\n', j + 1);
   }
@@ -464,20 +459,20 @@ function paraBreak(src, ls) {
   let i = ls;
   let c = src.charCodeAt(i);
   if (c === 10) return true;
-  while (c === 32 || c === 9) c = code(src, ++i);
+  while (c === 32 || c === 9) c = ++i < src.length ? src.charCodeAt(i) : -1;
   if (c === 10) return true; // [ \t]+\n
   i = ls;
   c = src.charCodeAt(i);
-  while (c === 32 && i - ls < 3) c = code(src, ++i);
+  while (c === 32 && i - ls < 3) c = ++i < src.length ? src.charCodeAt(i) : -1;
   switch (c) {
     case 45:
     case 42:
     case 43: {
       // " {0,3}[*+-][ \t]+[^ \t\n]"
       let j = i + 1;
-      let d = code(src, j);
+      let d = (j < src.length ? src.charCodeAt(j) : -1);
       if (d === 32 || d === 9) {
-        while (d === 32 || d === 9) d = code(src, ++j);
+        while (d === 32 || d === 9) d = ++j < src.length ? src.charCodeAt(j) : -1;
         if (d !== -1 && d !== 10) return true;
       }
       if (c === 43) break;
@@ -490,12 +485,12 @@ function paraBreak(src, ls) {
       if (RE_HR.test(src)) return true;
       break;
     case 49: {
-      const d = code(src, i + 1);
+      const d = (i + 1 < src.length ? src.charCodeAt(i + 1) : -1);
       if (d === 46 || d === 41) {
         let j = i + 2;
-        let e = code(src, j);
+        let e = (j < src.length ? src.charCodeAt(j) : -1);
         if (e === 32 || e === 9) {
-          while (e === 32 || e === 9) e = code(src, ++j);
+          while (e === 32 || e === 9) e = ++j < src.length ? src.charCodeAt(j) : -1;
           if (e !== -1 && e !== 10) return true;
         }
       }
@@ -521,8 +516,8 @@ function paraBreak(src, ls) {
   if (nl !== -1) {
     let k = nl + 1;
     const lim = k + 3;
-    while (k < lim && code(src, k) === 32) k++;
-    const d = code(src, k);
+    while (k < lim && (k < src.length ? src.charCodeAt(k) : -1) === 32) k++;
+    const d = (k < src.length ? src.charCodeAt(k) : -1);
     if (d === 124 || d === 58 || d === 45) {
       RE_TABLE.lastIndex = ls;
       if (RE_TABLE.test(src)) return true;
@@ -617,7 +612,7 @@ function expandLead(s, col) {
   let i = 0;
   let tab = false;
   for (;;) {
-    const c = code(s, i);
+    const c = (i < s.length ? s.charCodeAt(i) : -1);
     if (c === 32) i++;
     else if (c === 9) {
       tab = true;
@@ -639,7 +634,7 @@ function isBlankStr(s) {
 
 function firstNonSpace(s) {
   let i = 0;
-  while (code(s, i) === 32) i++;
+  while ((i < s.length ? s.charCodeAt(i) : -1) === 32) i++;
   return i < s.length ? i : -1;
 }
 
@@ -667,7 +662,7 @@ function endsWithBlankLine(s) {
 // " {0,ci}#{1,6}(?:\s|$)" with the #-run starting at i
 function headingOpensAt(s, i) {
   let j = i;
-  while (code(s, j) === 35) j++;
+  while ((j < s.length ? s.charCodeAt(j) : -1) === 35) j++;
   if (j - i > 6) return false;
   return j >= s.length || isJsSpace(s.charCodeAt(j));
 }
@@ -676,9 +671,9 @@ function headingOpensAt(s, i) {
 // blockquote and next-bullet checks marked applies to the current line but not the previous one.
 function itemBreak(line, ci, full) {
   let sp = 0;
-  while (code(line, sp) === 32) sp++;
+  while ((sp < line.length ? line.charCodeAt(sp) : -1) === 32) sp++;
   if (sp > ci) return false;
-  const c = code(line, sp);
+  const c = (sp < line.length ? line.charCodeAt(sp) : -1);
   switch (c) {
     case 96:
       return line.startsWith('```', sp);
@@ -696,7 +691,7 @@ function itemBreak(line, ci, full) {
     case 43:
     case 45: {
       if (full) {
-        const d = code(line, sp + 1);
+        const d = (sp + 1 < line.length ? line.charCodeAt(sp + 1) : -1);
         if (d === -1 || d === 32 || d === 9) return true;
       }
       return c !== 43 && HR_IND[ci].test(line);
@@ -704,10 +699,10 @@ function itemBreak(line, ci, full) {
   }
   if (full && c >= 48 && c <= 57) {
     let j = sp + 1;
-    while (j - sp < 9 && code(line, j) >= 48 && code(line, j) <= 57) j++;
-    const d = code(line, j);
+    while (j - sp < 9 && (j < line.length ? line.charCodeAt(j) : -1) >= 48 && (j < line.length ? line.charCodeAt(j) : -1) <= 57) j++;
+    const d = (j < line.length ? line.charCodeAt(j) : -1);
     if (d === 46 || d === 41) {
-      const e = code(line, j + 1);
+      const e = (j + 1 < line.length ? line.charCodeAt(j + 1) : -1);
       return e === -1 || e === 32 || e === 9;
     }
   }
@@ -739,7 +734,7 @@ function list(src, pos) {
     e += t[0].length;
     const t2 = t[2];
     const b = t[1].length;
-    let line = expandLead(code(t2, t2.length - 1) === 10 ? t2.slice(0, -1) : t2, b);
+    let line = expandLead(t2.length > 0 && t2.charCodeAt(t2.length - 1) === 10 ? t2.slice(0, -1) : t2, b);
     let le = src.indexOf('\n', e);
     if (le === -1) le = len;
     let next = src.slice(e, le);
@@ -957,22 +952,22 @@ function isHexCode(c) {
 
 // Does s[i..] read (#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+); -- marked leaves such an & alone.
 function entityAhead(s, i) {
-  let c = code(s, i);
+  let c = (i < s.length ? s.charCodeAt(i) : -1);
   if (c === 35) {
-    c = code(s, i + 1);
+    c = (i + 1 < s.length ? s.charCodeAt(i + 1) : -1);
     let j;
     if (c === 120 || c === 88) {
       j = i + 2;
-      while (j - i - 2 < 6 && isHexCode(code(s, j))) j++;
-      return j > i + 2 && code(s, j) === 59;
+      while (j - i - 2 < 6 && isHexCode((j < s.length ? s.charCodeAt(j) : -1))) j++;
+      return j > i + 2 && (j < s.length ? s.charCodeAt(j) : -1) === 59;
     }
     j = i + 1;
-    while (j - i - 1 < 7 && code(s, j) >= 48 && code(s, j) <= 57) j++;
-    return j > i + 1 && code(s, j) === 59;
+    while (j - i - 1 < 7 && (j < s.length ? s.charCodeAt(j) : -1) >= 48 && (j < s.length ? s.charCodeAt(j) : -1) <= 57) j++;
+    return j > i + 1 && (j < s.length ? s.charCodeAt(j) : -1) === 59;
   }
   let j = i;
-  while (isWordCode(code(s, j))) j++;
-  return j > i && code(s, j) === 59;
+  while (isWordCode((j < s.length ? s.charCodeAt(j) : -1))) j++;
+  return j > i && (j < s.length ? s.charCodeAt(j) : -1) === 59;
 }
 
 const RE_HTML_SPECIAL = /[<>"'&]/;
@@ -1064,7 +1059,7 @@ function isJsSpace(c) {
 function emailAhead(s, i) {
   let j = i;
   while (j < s.length && isEmailChar(s.charCodeAt(j))) j++;
-  return j > i && code(s, j) === 64;
+  return j > i && (j < s.length ? s.charCodeAt(j) : -1) === 64;
 }
 
 function protoAhead(s, i) {
@@ -1072,10 +1067,10 @@ function protoAhead(s, i) {
 }
 
 function spacesNl(s, i) {
-  if (code(s, i) !== 32 || code(s, i + 1) !== 32) return false;
+  if ((i < s.length ? s.charCodeAt(i) : -1) !== 32 || (i + 1 < s.length ? s.charCodeAt(i + 1) : -1) !== 32) return false;
   i += 2;
-  while (code(s, i) === 32) i++;
-  return code(s, i) === 10;
+  while ((i < s.length ? s.charCodeAt(i) : -1) === 32) i++;
+  return (i < s.length ? s.charCodeAt(i) : -1) === 10;
 }
 
 // Character classes for the inline text scanner (ASCII only; everything else is 0).
@@ -1099,7 +1094,7 @@ const RE_TEXT_STOP = /([\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/)|(www\.)|
 function textEnd(s, p, at) {
   const n = s.length;
   let c = s.charCodeAt(p);
-  const d0 = code(s, p + 1);
+  const d0 = (p + 1 < s.length ? s.charCodeAt(p + 1) : -1);
   if ((d0 === 109 || d0 === 120) && !(c < 128 && CLS[c] & C_ALNUM) && protoAhead(s, p + 1)) return p + 1;
   let q = p + 1;
   if (c === 96 || c === 126) while (q < n && s.charCodeAt(q) === c) q++;
@@ -1292,7 +1287,7 @@ function skipLinkEnd(t, i) {
   let j = i + 1;
   while (j < n) {
     const c = t.charCodeAt(j);
-    if (c === 93) return code(t, j + 1) === 40 ? skipDestEnd(t, j + 2) : -1;
+    if (c === 93) return (j + 1 < t.length ? t.charCodeAt(j + 1) : -1) === 40 ? skipDestEnd(t, j + 2) : -1;
     if (c === 91) return -1;
     if (c === 96) {
       let e = j + 1;
@@ -1522,7 +1517,7 @@ function inline(src, plain) {
       }
       case 33:
       case 91: {
-        if (c === 33 && code(src, pos + 1) !== 91) break;
+        if (c === 33 && (pos + 1 < src.length ? src.charCodeAt(pos + 1) : -1) !== 91) break;
         if (paren === -1) paren = src.indexOf(')') === -1 ? 0 : 1;
         if (paren === 1) {
           html = tryLink(src, pos, plain);
@@ -1679,9 +1674,9 @@ function tryLink(src, pos, plain) {
 function urlCouldStart(src, pos, at) {
   const c = src.charCodeAt(pos);
   if (c === 104 || c === 72) {
-    if ((code(src, pos + 1) | 32) === 116 && (code(src, pos + 2) | 32) === 116 && (code(src, pos + 3) | 32) === 112) return true;
+    if (((pos + 1 < src.length ? src.charCodeAt(pos + 1) : -1) | 32) === 116 && ((pos + 2 < src.length ? src.charCodeAt(pos + 2) : -1) | 32) === 116 && ((pos + 3 < src.length ? src.charCodeAt(pos + 3) : -1) | 32) === 112) return true;
   } else if (c === 102 || c === 70) {
-    if ((code(src, pos + 1) | 32) === 116 && (code(src, pos + 2) | 32) === 112) return true;
+    if (((pos + 1 < src.length ? src.charCodeAt(pos + 1) : -1) | 32) === 116 && ((pos + 2 < src.length ? src.charCodeAt(pos + 2) : -1) | 32) === 112) return true;
   } else if (c === 119) {
     if (src.startsWith('www.', pos)) return true;
   } else if (c === 109) {
@@ -1792,11 +1787,11 @@ function nextEmChar(m, i) {
 function emHeadSkip(m, Q, r) {
   const a = r === 42 ? 95 : 42;
   const j = nextEmChar(m, Q);
-  if (j < 0 || m.charCodeAt(j) !== a || code(m, j + 1) !== a) return Q;
+  if (j < 0 || m.charCodeAt(j) !== a || (j + 1 < m.length ? m.charCodeAt(j + 1) : -1) !== a) return Q;
   const j2 = nextEmChar(m, j + 2);
   if (j2 < 0 || m.charCodeAt(j2) !== r) return Q;
   const j3 = nextEmChar(m, j2 + 1);
-  if (j3 < 0 || m.charCodeAt(j3) !== a || code(m, j3 + 1) !== a) return Q;
+  if (j3 < 0 || m.charCodeAt(j3) !== a || (j3 + 1 < m.length ? m.charCodeAt(j3 + 1) : -1) !== a) return Q;
   return j3;
 }
 
@@ -1819,14 +1814,14 @@ let gEnd = 0; // end index of the last successful emStrong/del/link/url match
 function emStrong(src, pos, prevChar, ctx, plain) {
   const r = src.charCodeAt(pos);
   let re = pos + 1;
-  while (code(src, re) === r) re++;
+  while ((re < src.length ? src.charCodeAt(re) : -1) === r) re++;
   const k = re - pos;
   const nx = cpAt(src, re);
   if (nx < 0) return null;
   const nk = kindOf(nx);
   if (nk === K_SPACE) return null;
   const opensPunct = nk === K_PUNCT && nx !== 126; // marked's s[1] / s[3]
-  if (code(src, pos - 1) !== r) {
+  if (pos === 0 || src.charCodeAt(pos - 1) !== r) {
     // masking never creates a delimiter, so the run cannot extend backwards in the masked text
     // either: marked's early rejections below need only the previous text token's character
     if (r === 95 && !opensPunct && hasAlnum(prevChar)) return null;
@@ -1864,7 +1859,7 @@ function emStrong(src, pos, prevChar, ctx, plain) {
     const rs = masked.indexOf(delim, cur);
     if (rs === -1) return null;
     let rend = rs + 1;
-    while (code(masked, rend) === r) rend++;
+    while ((rend < masked.length ? masked.charCodeAt(rend) : -1) === r) rend++;
     const prev = cpBefore(masked, rs);
     if (rs - (prev > 0xffff ? 2 : 1) > v) return null;
     cur = rend;
@@ -1898,7 +1893,7 @@ function emStrong(src, pos, prevChar, ctx, plain) {
 
 function del(src, pos, prevChar, ctx, plain) {
   let re = pos + 1;
-  while (code(src, re) === 126) re++;
+  while ((re < src.length ? src.charCodeAt(re) : -1) === 126) re++;
   const o = re - pos;
   if (o > 2) return null;
   const nx = cpAt(src, re);
@@ -1918,7 +1913,7 @@ function del(src, pos, prevChar, ctx, plain) {
     const rs = masked.indexOf('~', cur);
     if (rs === -1) return null;
     let rend = rs + 1;
-    while (code(masked, rend) === 126) rend++;
+    while ((rend < masked.length ? masked.charCodeAt(rend) : -1) === 126) rend++;
     const prev = cpBefore(masked, rs);
     if (rs - (prev > 0xffff ? 2 : 1) > u) return null;
     cur = rend;
