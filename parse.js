@@ -342,7 +342,7 @@ function blockTokens(src, tokens, mergeFirst) {
       continue;
     }
     const firstNl = src.indexOf('\n');
-    if (firstNl !== -1 && delimiterRowStart(src, firstNl + 1) && (tok = table(src))) {
+    if (firstNl !== -1 && delimiterRow(src, firstNl + 1) === 2 && (tok = table(src))) {
       src = src.substring(tok.raw.length);
       tokens.push(tok);
       continue;
@@ -387,12 +387,56 @@ function blockTokens(src, tokens, mergeFirst) {
   return tokens;
 }
 
-/** Does a GFM table delimiter row (after at most three spaces: '|', ':' or '-') start at i? */
-function delimiterRowStart(src, i) {
+/**
+ * Is the line at i a whole GFM delimiter row, ` {0,3}(?:\| *)?:?-+:? *(?:\| *:?-+:? *)*(?:\| *)?`
+ * up to its end? 0: no, 1: yes, 2: yes and it holds a ':' or '|' (marked's table() needs one).
+ */
+function delimiterRow(src, i) {
+  const n = src.length;
   let j = i;
   while (j < i + 3 && src.charCodeAt(j) === 32) j++;
-  const c = src.charCodeAt(j);
-  return c === 124 || c === 58 || c === 45;
+  let special = false;
+  if (src.charCodeAt(j) === 124) {
+    special = true;
+    j++;
+    while (src.charCodeAt(j) === 32) j++;
+  }
+  for (;;) {
+    // a cell, :?-+:? *
+    if (src.charCodeAt(j) === 58) {
+      special = true;
+      j++;
+    }
+    if (src.charCodeAt(j) !== 45) return 0;
+    while (src.charCodeAt(j) === 45) j++;
+    if (src.charCodeAt(j) === 58) {
+      special = true;
+      j++;
+    }
+    while (src.charCodeAt(j) === 32) j++;
+    // then the end of the line, or a pipe and either the end of the line or another cell
+    if (j >= n || src.charCodeAt(j) === 10) return special ? 2 : 1;
+    if (src.charCodeAt(j) !== 124) return 0;
+    special = true;
+    j++;
+    while (src.charCodeAt(j) === 32) j++;
+    if (j >= n || src.charCodeAt(j) === 10) return 2;
+  }
+}
+
+/** marked's table rule as a paragraph interrupter at line start ls: a header line ` *([^\n ].*)`
+ * followed by a delimiter row (the rows after it may be empty, so nothing else is needed). */
+function tableInterrupts(src, ls) {
+  const n = src.length;
+  let j = ls;
+  while (src.charCodeAt(j) === 32) j++;
+  if (j >= n || src.charCodeAt(j) === 10) return false;
+  for (let k = j + 1; k < n; k++) {
+    const d = src.charCodeAt(k);
+    if (d === 10) return delimiterRow(src, k + 1) !== 0;
+    if (d === 13 || d === 0x2028 || d === 0x2029) return false; // `.` stops there
+  }
+  return false;
 }
 
 /** Is there a setext underline (` {0,3}(=+|-+)[ \t]*` alone on its line) among the lines after
@@ -421,7 +465,6 @@ function setextUnderlineAhead(src, nl) {
 // What can interrupt a paragraph, tried at the start of its next line. The table rule (a header
 // line followed by a delimiter row) is kept apart: it is costly and needs a delimiter row next.
 const RE_PARA_STOP = new RegExp(`(?:${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_PARA}|${I_HTML}|[ \\t]+\\n)`, 'y');
-const Y_TABLE = new RegExp(TABLE_SRC, 'y');
 // The same for a paragraph inside a block quote (its list rule differs, and tables do not count).
 const RE_BQ_STOP = new RegExp(`(?:${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_BQ}|${I_HTML}|[ \\t]+\\n)`, 'y');
 
@@ -466,11 +509,8 @@ function paragraphLength(src, end) {
       if (RE_PARA_STOP.test(src)) return end;
     }
     const nx = src.indexOf('\n', ls);
-    if (nx !== -1 && delimiterRowStart(src, nx + 1)) {
-      Y_TABLE.lastIndex = ls;
-      if (Y_TABLE.test(src)) return end;
-    }
     if (nx === -1) return n;
+    if (tableInterrupts(src, ls)) return end;
     end = nx;
   }
 }
