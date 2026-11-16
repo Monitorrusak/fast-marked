@@ -202,13 +202,19 @@ function expandTabs(s, col = 0) {
 }
 
 function splitCells(row, count) {
-  const marked = row.replace(/\|/g, (_, off, str) => {
-    let escaped = false;
-    let p = off;
-    while (--p >= 0 && str[p] === '\\') escaped = !escaped;
-    return escaped ? '|' : ' |';
-  });
-  const cells = marked.split(/ \|/);
+  // marked turns every unescaped '|' (one after an even number of backslashes) into ' |' and
+  // splits on / \|/; an escaped pipe follows a backslash, never a space, so that is the same as
+  // cutting the row at its unescaped pipes
+  const cells = [];
+  let start = 0;
+  for (let i = row.indexOf('|'); i !== -1; i = row.indexOf('|', i + 1)) {
+    let p = i;
+    while (p > 0 && row.charCodeAt(p - 1) === 92) p--;
+    if ((i - p) % 2 === 1) continue;
+    cells.push(row.slice(start, i));
+    start = i + 1;
+  }
+  cells.push(row.slice(start));
   if (!cells[0].trim()) cells.shift();
   if (cells.length > 0 && !cells[cells.length - 1].trim()) cells.pop();
   if (count) {
