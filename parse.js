@@ -29,7 +29,6 @@ const I_LIST_BQ = R` {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]|\n|$)`;
 const TABLE_SRC =
   R` *([^\n ].*)\n {0,3}((?:\| *)?:?-+:? *(?:\| *:?-+:? *)*(?:\| *)?)(?:\n((?:(?! *\n|${HR_SRC}|${I_HEADING}|${I_BQ}|(?: {4}| {0,3}\t)[^\n]|${I_FENCE}| {0,3}(?:[*+-]|1[.)])[ \t]|${I_HTML}).*(?:\n|$))*)\n*|$)`;
 
-const RE_NEWLINE = /^(?:[ \t]*(?:\n|$))+/;
 const RE_CODE = /^((?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/;
 const RE_FENCES = /^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}(?:(?=`)\1`*|(?=~)\1~*) *(?=\n|$)|$)/;
 const RE_HEADING = /^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/;
@@ -260,12 +259,16 @@ function blockTokens(src, tokens, mergeFirst) {
     const lead = ind <= 3 ? c : -1;
 
     // blank lines
-    if ((c0 === 10 || c0 === 32 || c0 === 9) && (m = RE_NEWLINE.exec(src)) && m[0].length > 0) {
-      src = src.substring(m[0].length);
-      const prev = lastOf(tokens);
-      if (m[0].length === 1 && prev !== undefined) prev.raw += '\n';
-      else tokens.push({ type: 'space', raw: m[0] });
-      continue;
+    if (c0 === 10 || c0 === 32 || c0 === 9) {
+      const len = blankRunLength(src);
+      if (len > 0) {
+        const raw = src.slice(0, len);
+        src = src.substring(len);
+        const prev = lastOf(tokens);
+        if (len === 1 && prev !== undefined) prev.raw += '\n';
+        else tokens.push({ type: 'space', raw });
+        continue;
+      }
     }
     // indented code: four spaces, or up to three and a tab
     if ((ind === 4 || c === 9) && (m = RE_CODE.exec(src))) {
@@ -454,6 +457,22 @@ function setextUnderlineAhead(src, nl) {
       while (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9) k++;
       if (k >= n || src.charCodeAt(k) === 10) return true;
     }
+    // lines the heading text cannot run on over: a bullet and a space, a quote marker, an ATX
+    // heading, a fence (some of the rule's own stops; the others are left to the regex)
+    if (ch === 62) return false;
+    if ((ch === 42 || ch === 43 || ch === 45) && src.charCodeAt(j + 1) === 32) return false;
+    if (ch >= 48 && ch <= 57) {
+      let d = j;
+      while (d < j + 9 && src.charCodeAt(d) >= 48 && src.charCodeAt(d) <= 57) d++;
+      const c2 = src.charCodeAt(d);
+      if ((c2 === 46 || c2 === 41) && src.charCodeAt(d + 1) === 32) return false;
+    }
+    if (ch === 35) {
+      let h = j;
+      while (h < j + 6 && src.charCodeAt(h) === 35) h++;
+      if (h >= n || isJsSpace(src.charCodeAt(h))) return false;
+    }
+    if ((ch === 96 || ch === 126) && src.charCodeAt(j + 1) === ch && src.charCodeAt(j + 2) === ch) return false;
     let k = ls;
     while (k < n && src.charCodeAt(k) !== 10 && isJsSpace(src.charCodeAt(k))) k++;
     if (k >= n || src.charCodeAt(k) === 10) return false;
@@ -550,6 +569,19 @@ function blockquoteLength(src) {
     pos = e + 1;
   }
   return pos;
+}
+
+/** Length of RE_NEWLINE's match, `^(?:[ \t]*(?:\n|$))+`: whole lines of spaces and tabs. */
+function blankRunLength(src) {
+  const n = src.length;
+  let i = 0;
+  for (;;) {
+    let j = i;
+    while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9)) j++;
+    if (j >= n) return n; // the last line, ended by the end of the text
+    if (src.charCodeAt(j) !== 10) return i;
+    i = j + 1;
+  }
 }
 
 function indentCompensation(raw, text) {
@@ -1790,7 +1822,7 @@ export function parse(markdown) {
   inRawBlock = false;
   linkEmitted = false;
   linkParenPossible = true;
-  const tokens = blockTokens(markdown.replace(/\r\n|\r/g, '\n'), [], false);
+  const tokens = blockTokens(markdown.indexOf('\r') === -1 ? markdown : markdown.replace(/\r\n|\r/g, '\n'), [], false);
   for (let i = 0; i < queue.length; i++) {
     inRawBlock = false;
     const src = queue[i].src;
