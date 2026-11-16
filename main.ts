@@ -24,6 +24,13 @@ type Case = { id: string; markdown: string } | null;
 
 const cases: Case[] = JSON.parse(readFileSync(inDir + '/cases.json', 'utf8'));
 
+// write every byte of s (a write may in principle take fewer bytes than offered)
+function writeAll(fd: number, s: string): void {
+  const buf = Buffer.from(s, 'utf8');
+  let off = 0;
+  while (off < buf.length) off += writeSync(fd, buf, off, buf.length - off);
+}
+
 // Stream the array out: each case's HTML is stringified (and so flattened) as soon as it is made
 // and written in ~1 MB chunks, so the heap never holds all 720 results at once.
 const fd = openSync(outDir + '/html.json', 'w');
@@ -33,9 +40,9 @@ for (let i = 0; i < cases.length; i++) {
   chunk += (i === 0 ? '' : ',') + JSON.stringify(parse(c.markdown));
   cases[i] = null;
   if (chunk.length > 1 << 20) {
-    writeSync(fd, chunk);
+    writeAll(fd, chunk);
     chunk = '';
   }
 }
-writeSync(fd, chunk + ']');
+writeAll(fd, chunk + ']');
 closeSync(fd);
