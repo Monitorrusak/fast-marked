@@ -19,7 +19,6 @@ const HR_CAP = R` {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|
 const HR_NC = R` {0,3}(?:(?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)`;
 const HEAD_OPEN = R` {0,3}#{1,6}(?:\s|$)`;
 const FENCE_OPEN = R` {0,3}(?:\x60{3,}(?=[^\x60\n]*(?:\n|$))|~~~)[^\n]*(?:\n|$)`;
-const HTML_OPEN = R` {0,3}(?:<\/?(?:${TAGS})(?: +|\n|\/?>)|<(?:(?:script|pre|style|textarea)(?:[\s>]|$)|!--)|<\?|<![A-Za-z]|<!\[CDATA\[)`;
 const LH_BULL = R` {0,3}(?:[*+-]|\d{1,9}[.)]) `;
 const LH_FENCE = R` {0,3}(?:\x60{3,}|~{3,})`;
 const LH_HTML = R` {0,3}<[^\n>]+>\n`;
@@ -48,7 +47,6 @@ const RE_BQ_STRIP = /^ {0,3}>[ \t]?/gm;
 // list item helpers, one per indent clamp 0..3
 const ind = (f) => [0, 1, 2, 3].map(f);
 const HR_IND = ind((n) => new RegExp(`^ {0,${n}}((?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\\*[ \t]*){3,})(?:\\n+|$)`));
-const HTML_IND = ind((n) => new RegExp(`^ {0,${n}}(?:<\\/?(?:${TAGS})(?: +|$|\\/?>)|<(?:(?:script|pre|style|textarea)(?:[\\s>]|$)|!--)|<\\?|<![A-Za-z]|<!\\[CDATA\\[)`, 'i'));
 const ITEM_RE = {
   '*': /( {0,3}\*)((?:[\t ][^\n]*)?(?:\n|$))/y,
   '+': /( {0,3}\+)((?:[\t ][^\n]*)?(?:\n|$))/y,
@@ -57,7 +55,6 @@ const ITEM_RE = {
   ')': /( {0,3}\d{1,9}\))((?:[\t ][^\n]*)?(?:\n|$))/y,
 };
 const RE_FENCE_OPEN = new RegExp(FENCE_OPEN, 'y');
-const RE_HTML_OPEN = new RegExp(HTML_OPEN, 'y');
 const RE_TASK = /^\[[ xX]\][ \t]+\S/;
 const RE_TASK_PREFIX = /^\[[ xX]\][ \t]+/;
 
@@ -509,8 +506,7 @@ function paraBreak(src, ls) {
       if (RE_FENCE_OPEN.test(src)) return true;
       break;
     case 60:
-      RE_HTML_OPEN.lastIndex = ls;
-      if (RE_HTML_OPEN.test(src)) return true;
+      if (htmlOpensAt(src, i, src.length, false)) return true;
       break;
   }
   // table: this line is a header if the next one is a delimiter row
@@ -542,6 +538,48 @@ function fenceIndent(raw, text) {
     .join('\n');
 }
 
+const BLOCK_TAGS = new Set(TAGS.replace('h[1-6]', 'h1|h2|h3|h4|h5|h6').split('|'));
+
+// marked's HTML block opener at s[i] === "<" (after at most three spaces), looking no further than
+// `end`. eol false, the paragraph flavour: case-sensitive, and a block tag name must be followed by
+// " ", "\n", ">" or "/>". eol true, the list-item flavour (tested on one line, with the i flag):
+// any case, and the line may also end right after the name.
+function htmlOpensAt(s, i, end, eol) {
+  let j = i + 1;
+  const c = j < end ? s.charCodeAt(j) : -1;
+  if (c === 63) return true; // <?
+  if (c === 33) {
+    const d = j + 1 < end ? s.charCodeAt(j + 1) : -1;
+    if ((d >= 65 && d <= 90) || (d >= 97 && d <= 122)) return true; // <![A-Za-z]
+    if (d === 45) return j + 2 < end && s.charCodeAt(j + 2) === 45; // <!--
+    if (d === 91 && j + 8 <= end) {
+      const t = s.slice(j + 2, j + 8); // <![CDATA[
+      return eol ? t.toUpperCase() === 'CDATA[' : t === 'CDATA[';
+    }
+    return false;
+  }
+  if (c === 47) j++; // </
+  let k = j;
+  while (k < end) {
+    const d = s.charCodeAt(k);
+    if (d >= 128 || !(CLS[d] & C_ALNUM)) break;
+    k++;
+  }
+  if (k === j) return false;
+  const name = eol ? s.slice(j, k).toLowerCase() : s.slice(j, k);
+  const t = k < end ? s.charCodeAt(k) : -1;
+  if (BLOCK_TAGS.has(name)) {
+    // (?: +|\n|\/?>) or, on a line, (?: +|$|\/?>)
+    if (t === 32 || t === 62 || (t === 47 && k + 1 < end && s.charCodeAt(k + 1) === 62)) return true;
+    if (eol ? t === -1 : t === 10) return true;
+  }
+  // <(?:script|pre|style|textarea)(?:[\s>]|$), without a "/"
+  if (c !== 47 && (name === 'script' || name === 'pre' || name === 'style' || name === 'textarea')) {
+    return t === -1 || t === 62 || isJsSpace(t);
+  }
+  return false;
+}
+
 // Does the line at ls end the lazy paragraph inside marked's blockquote rule? It must be
 // non-empty and open none of: a rule, an ATX heading, ">", a fence, a list marker followed by a
 // blank or the line end, an HTML block, or be blank ([ \t]+\n).
@@ -565,8 +603,7 @@ function bqParaBreak(src, ls) {
       RE_FENCE_OPEN.lastIndex = ls;
       return RE_FENCE_OPEN.test(src);
     case 60:
-      RE_HTML_OPEN.lastIndex = ls;
-      return RE_HTML_OPEN.test(src);
+      return htmlOpensAt(src, i, n, false);
     case 42:
     case 43:
     case 45: {
@@ -763,7 +800,7 @@ function itemBreak(line, ci, full) {
     case 35:
       return headingOpensAt(line, sp);
     case 60:
-      return HTML_IND[ci].test(line);
+      return htmlOpensAt(line, sp, line.length, true);
     case 62:
       return full;
     case 95:
@@ -822,7 +859,7 @@ function itemBreakAt(src, e, f, fc, le, ci) {
       return j - f <= 6 && (j >= le || isJsSpace(src.charCodeAt(j)));
     }
     case 60:
-      return HTML_IND[ci].test(src.slice(e, le));
+      return htmlOpensAt(src, f, le, true);
     case 62:
       return true;
     case 95:
@@ -1061,8 +1098,7 @@ function rowBreak(src, ls) {
       RE_FENCE_OPEN.lastIndex = ls;
       return RE_FENCE_OPEN.test(src);
     case 60:
-      RE_HTML_OPEN.lastIndex = ls;
-      return RE_HTML_OPEN.test(src);
+      return htmlOpensAt(src, i, n, false);
     case 42:
     case 43:
     case 45:

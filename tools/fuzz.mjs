@@ -42,6 +42,10 @@ const ATOMS = [
 const LINE_STARTS = ['', '', '', '', '- ', '* ', '+ ', '1. ', '2) ', '10. ', '> ', '>> ', '# ', '## ', '###### ', '    ', '\t', '  ', '   ',
   '```', '~~~', '```js', '---', '***', '___', '===', '- - -', '| a | b |', '|---|:-:|', '--- | ---', '<div>', '</div>', '<!--', '-->',
   '[foo]: /url "title"', '[bar]: <x y>', '- [ ] ', '- [x] ', '1. [X] ', '  - ', '    - ', '   > ', '<pre>', '<details>', '<summary>s</summary>'];
+// HTML block openers and near misses, mixed into the line pools below
+const HTML_EDGE = ['<DIV>', '<Div x>', '<div/>', '<div/', '<div', '<divx>', '<h1>', '<H2 a>', '<h7>', '<script', '<SCRIPT>', '<pre\tx', '<textarea>', '</pre>', '</DIV>',
+  '<![cdata[x', '<![CDATA[x', '<!-x', '<!--x', '<?php', '<!doc', '<colgroup>', '<col', '<col>', '<p/>', '<p', '<P >', '<style', '<stylex>', '  <table>', '   <ul>', '<a-b>'];
+LINE_STARTS.push(...HTML_EDGE);
 
 function inlineSoup(n) {
   let s = '';
@@ -63,6 +67,7 @@ function blockSoup() {
 const ROW_LINES = ['| 1 | 2 |', 'a | b', 'x', '', ' ', '   ', '\t', ' \t', '    code', '   \tx', '\tx', '1. x', '1) x', '2. x', '1.x', '- x', '-x', '+ x', '* x', '*x', '> q',
   '>q', '   > q', '# h', '#h', '####### h', '```', '``` js', '~~~', '<div>', '<div', '</div>', '<!-- c', '<?x', '<!X', '<![CDATA[', '<span>', '***', '___', '---',
   '- - -', 'a b', 'p ', '| x \\| y |', '|', '||', ':-:', '=='];
+ROW_LINES.push(...HTML_EDGE);
 function tableSoup() {
   const head = pick(['| a | b |', 'a | b', '|a|', 'x|y|z', '  | h1 | h2 |']);
   const delim = pick(['|---|---|', '--- | ---', '|:-|', ':-:|--:|---', '|---|', '   |-|-|']);
@@ -76,6 +81,7 @@ function tableSoup() {
 // a blockquote, then lazy and interrupting lines
 const QUOTE_LINES = ['> a', '>b', '   > c', '    > d', '>', '> ', '>	', 'lazy', '  lazy', '', ' ', '	', '- x', '-', '-	', '* y', '+', '1. z', '1)', '12. w', '1234567890. v', '# h', '#', '---', '***',
   '___', '```', '~~~', '<div>', '<!--', '<p>', '<x>', '> > n', '>> m', '> - li', '> 1. li', '> ```', '>     code', '> # h', '> ---', 'a b', '=', '> ==', '> --'];
+QUOTE_LINES.push(...HTML_EDGE);
 function quoteSoup() {
   const lines = [];
   const n = 1 + int(7);
