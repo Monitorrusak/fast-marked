@@ -227,9 +227,8 @@ function blockTokens(src, out, mergePara) {
 
     if (c === 10 || c === 9 || i >= len) {
       RE_NEWLINE.lastIndex = pos;
-      m = RE_NEWLINE.exec(src);
-      if (m !== null && m[0].length > 0) {
-        const raw = m[0];
+      if (RE_NEWLINE.test(src) && RE_NEWLINE.lastIndex > pos) {
+        const raw = src.slice(pos, RE_NEWLINE.lastIndex);
         pos += raw.length;
         const last = out[out.length - 1];
         if (raw.length === 1 && last !== undefined) last.raw += '\n';
@@ -240,9 +239,8 @@ function blockTokens(src, out, mergePara) {
 
     if (indent >= 4 || c === 9) {
       RE_CODE.lastIndex = pos;
-      m = RE_CODE.exec(src);
-      if (m !== null) {
-        const raw = trimBlankTail(m[0]);
+      if (RE_CODE.test(src)) {
+        const raw = trimBlankTail(src.slice(pos, RE_CODE.lastIndex));
         const text = raw.replace(RE_CODE_INDENT, '');
         pos += raw.length;
         const last = out[out.length - 1];
@@ -292,9 +290,8 @@ function blockTokens(src, out, mergePara) {
       }
       if (c === 45 || c === 95 || c === 42) {
         RE_HR.lastIndex = pos;
-        m = RE_HR.exec(src);
-        if (m !== null) {
-          const raw = rtrimChar(m[0], '\n');
+        if (RE_HR.test(src)) {
+          const raw = rtrimChar(src.slice(pos, RE_HR.lastIndex), '\n');
           pos += raw.length;
           out.push(new Block(T_HR, raw));
           continue;
@@ -318,9 +315,8 @@ function blockTokens(src, out, mergePara) {
       }
       if (c === 60) {
         RE_HTML.lastIndex = pos;
-        m = RE_HTML.exec(src);
-        if (m !== null) {
-          const raw = trimBlankTail(m[0]);
+        if (RE_HTML.test(src)) {
+          const raw = trimBlankTail(src.slice(pos, RE_HTML.lastIndex));
           pos += raw.length;
           const b = new Block(T_HTML, raw);
           b.text = raw;
@@ -1211,7 +1207,7 @@ for (let c = 0; c < 128; c++) {
   CLS[c] = k;
 }
 
-const RE_TEXT_STOP = /([\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/)|(www\.)|( {2,}\n)|mailto:|xmpp:/g;
+const RE_TEXT_STOP = /[\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/|www\.| {2,}\n|mailto:|xmpp:/g;
 
 /**
  * End of the inline text token marked's gfm `text` rule matches at p. `at` is the index of the next
@@ -1233,34 +1229,43 @@ function textEnd(s, p, at) {
   // (special character, "http", "ftp://"); group 2: "www." (stop before it when the character in
   // front is blank or one of * _ ~ (); otherwise the match is "x  \n" or "xmailto:" / "xxmpp:"
   // and the stop is after the first character.
+  // (test() + lastIndex rather than exec(): no match array per text token. The alternative that
+  // matched is told by its last character, which differs between all of them.)
   const q0 = q;
   let cEnd = n;
-  RE_TEXT_STOP.lastIndex = q;
+  let from = q;
   for (;;) {
-    const m = RE_TEXT_STOP.exec(s);
-    if (m === null) break;
-    const i = m.index;
-    if (m[1] !== undefined) cEnd = i;
-    else if (m[2] !== undefined) {
+    RE_TEXT_STOP.lastIndex = from;
+    if (!RE_TEXT_STOP.test(s)) break;
+    const li = RE_TEXT_STOP.lastIndex;
+    const z = s.charCodeAt(li - 1);
+    if (z === 10) {
+      // "x  \n": stop after the non-space character in front of the spaces (the leftmost match
+      // starts at the first space of the run, and that character lies at or after q0)
+      let i = li - 1;
+      while (i > from && s.charCodeAt(i - 1) === 32) i--;
+      cEnd = i;
+    } else if (z === 46) {
+      // "www.": stop before it when the character in front is blank or one of * _ ~ (
+      const i = li - 4;
       const b = s.charCodeAt(i - 1);
       if (!(isJsSpace(b) || b === 42 || b === 95 || b === 126 || b === 40)) {
-        RE_TEXT_STOP.lastIndex = i + 1;
+        from = i + 1;
         continue;
       }
       cEnd = i;
-    } else if (m[3] !== undefined) {
-      // "x  \n": stop after the non-space character in front of the spaces (leftmost search
-      // guarantees that character is not a space, and it lies at or after q0)
-      cEnd = i;
-    } else {
-      // "xmailto:" / "xxmpp:" with x not alphanumeric
+    } else if (z === 58) {
+      // "xmailto:" / "xxmpp:" with x not alphanumeric: stop after x
+      const i = s.charCodeAt(li - 2) === 111 ? li - 7 : li - 5;
       const b = s.charCodeAt(i - 1);
       if (i - 1 < q0 || (b < 128 && CLS[b] & C_ALNUM)) {
-        RE_TEXT_STOP.lastIndex = i + 1;
+        from = i + 1;
         continue;
       }
       cEnd = i;
-    }
+    } else if (z === 47) cEnd = li - 6; // "ftp://"
+    else if (z === 112 || z === 80) cEnd = li - 4; // "http"
+    else cEnd = li - 1; // a special character
     break;
   }
   if (at === -1) return cEnd;
@@ -1617,25 +1622,23 @@ function inline(src, plain) {
       case 92: {
         // escape, then hard break
         RE_ESCAPE.lastIndex = pos;
-        const m = RE_ESCAPE.exec(src);
-        if (m !== null) {
+        if (RE_ESCAPE.test(src)) {
           end = pos + 2;
-          html = plain ? m[1] : escapeHtml(m[1]);
+          const ch = src[pos + 1];
+          html = plain ? ch : escapeHtml(ch);
           break;
         }
         RE_BR.lastIndex = pos;
-        const b = RE_BR.exec(src);
-        if (b !== null) {
-          end = pos + b[0].length;
+        if (RE_BR.test(src)) {
+          end = RE_BR.lastIndex;
           html = plain ? '' : '<br>';
         }
         break;
       }
       case 60: {
         RE_TAG.lastIndex = pos;
-        let m = RE_TAG.exec(src);
-        if (m !== null) {
-          const raw = m[0];
+        if (RE_TAG.test(src)) {
+          const raw = src.slice(pos, RE_TAG.lastIndex);
           if (!inLink && /^<a /i.test(raw)) inLink = true;
           else if (inLink && /^<\/a>/i.test(raw)) inLink = false;
           if (!inRawBlock && /^<(pre|code|kbd|script)(\s|>)/i.test(raw)) inRawBlock = true;
@@ -1645,7 +1648,7 @@ function inline(src, plain) {
           break;
         }
         RE_AUTOLINK.lastIndex = pos;
-        m = RE_AUTOLINK.exec(src);
+        const m = RE_AUTOLINK.exec(src);
         if (m !== null) {
           end = pos + m[0].length;
           html = autolinkHtml(m[1], m[2] === '@' ? 'mailto:' + m[1] : m[1], plain);
@@ -1709,9 +1712,8 @@ function inline(src, plain) {
       }
       case 32: {
         RE_BR.lastIndex = pos;
-        const b = RE_BR.exec(src);
-        if (b !== null) {
-          end = pos + b[0].length;
+        if (RE_BR.test(src)) {
+          end = RE_BR.lastIndex;
           html = plain ? '' : '<br>';
         }
         break;
