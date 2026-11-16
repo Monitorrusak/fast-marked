@@ -1581,8 +1581,15 @@ function emStrong(s, pos, ctx, prevChar, textMode, features) {
   Y_EM_L.lastIndex = pos;
   let m = Y_EM_L.exec(s);
   if (!m || (!m[1] && !m[2] && !m[3] && !m[4])) return null;
-  const masked = maskedOf(ctx);
   const ch = m[0][0];
+  if (s.charCodeAt(pos - 1) !== (ch === '*' ? 42 : 95)) {
+    // Masking never produces '*' or '_', so the masked text has no `ch` right before pos either:
+    // marked's run start below is pos itself, prevChar stays as given, and its first two
+    // rejections (an intraword opener, a punctuation opener after a word) need no mask.
+    if (m[4] && isUnicodeAlnum(prevChar)) return null;
+    if ((m[1] || m[3]) && prevChar && !isPunctuation(prevChar)) return null;
+  }
+  const masked = maskedOf(ctx);
   const sameAsPrev = prevChar === ch;
   let l = pos;
   while (l > 0 && masked[l - 1] === ch) l--;
