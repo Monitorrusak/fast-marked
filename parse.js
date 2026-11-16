@@ -1449,7 +1449,16 @@ function autolinkHtml(text, href, plain) {
   return '<a href="' + escapeAll(url) + '">' + t + '</a>';
 }
 
+// Everything that can start an inline rule other than plain text, or end a text token: without any
+// of these the whole text is a single text token.
+const RE_INLINE_SPECIAL = /[\\<!\[`*~_@]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/|www\.|mailto:|xmpp:| {2,}\n/;
+
 function inline(src, plain) {
+  if (!RE_INLINE_SPECIAL.test(src)) {
+    if (inRawBlock) return src;
+    const text = decodeNumeric(src);
+    return plain ? text : escapeHtml(text);
+  }
   let paren = -1; // marked's linkParenPossible: whether this text has a ")" (-1: not checked yet)
   const len = src.length;
   let out = '';
