@@ -34,6 +34,9 @@ const ATOMS = [
   '—', '“', '’', '\u{1F600}', '　', ' ', '1.', 'http://x.org/p?q=1', 'www.x.com', 'a@b.co',
   'mailto:a@b.co', '<http://a.b>', '<a@b.co>', 'https://e.com/a_b_(c)', '|', 'x_y_z', '*foo*', '_bar_', '**baz**',
   '~~del~~', '`code`', ' \\\n', '  \n', 'ftp://f.o', 'HTTP://U.V', 'xmpp:a@b.cd',
+  '@', 'foo@bar.com', 'x.y+z@q-r.io', 'a_b@c.d', '*a@b.c*', '~x@y.z', 'www.', 'www.a.b', '(www.a.b)', '_www.a.b_', 'http', 'https://',
+  'Http', 'hTTps://a.b/c?d=e&f=g', 'ftp', 'mailto:', 'xmpp:', '&#', '&#x', '&#12', '&#x1f;', ';', '&amp', '&nbsp', '&#38;', '&#x26;',
+  'a.b', 'e.g.', 'x-y', 'v1.2', 'é@ü.de', '!!', '#tag',
 ];
 const LINE_STARTS = ['', '', '', '', '- ', '* ', '+ ', '1. ', '2) ', '10. ', '> ', '>> ', '# ', '## ', '###### ', '    ', '\t', '  ', '   ',
   '```', '~~~', '```js', '---', '***', '___', '===', '- - -', '| a | b |', '|---|:-:|', '--- | ---', '<div>', '</div>', '<!--', '-->',

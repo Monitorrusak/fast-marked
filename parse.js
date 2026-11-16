@@ -40,7 +40,6 @@ const RE_DEF = new RegExp(R` {0,3}\[((?!\s*\])(?:\\[\s\S]|[^\[\]\\\n]|\n(?![ \t]
 const RE_TABLE = new RegExp(TABLE_SRC, 'y');
 const RE_LHEADING = new RegExp(LHEAD_SRC, 'y');
 const RE_LHEADING_A = new RegExp('^' + LHEAD_SRC);
-const RE_TEXT = /[^\n]+/y;
 
 const RE_CODE_INDENT = /^(?: {0,3}\t| {1,4})/gm;
 const RE_BQ_START = /^ {0,3}>/;
@@ -77,7 +76,6 @@ const RE_NOLINK = new RegExp(R`!?\[(${REF_LABEL})\](?:\[\])?`, 'y');
 const REFSEARCH_SRC = R`!?\[((?:[^\[\]\\\x60]*(?:\[(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|\x60+(?!\x60)[^\x60]*?\x60+(?!\x60)|\x60\x60+(?=\]))){0,999}?[^\[\]\\\x60]*?)\]\[((?!\s*\])(?:\\[\s\S]|[^\[\]\\]){1,999})\]|!?\[((?!\s*\])(?:\\[\s\S]|[^\[\]\\]){1,999})\](?:\[\])?(?!\()`;
 const RE_REFSEARCH = new RegExp(REFSEARCH_SRC, 'g');
 const RE_BLOCKSKIP = new RegExp(R`\[(?:[^\[\]\x60]|(?<a>\x60+)[^\x60]+\k<a>(?!\x60))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)|(?<!\x60)()(?<b>\x60+)[^\x60]+\k<b>(?!\x60)|<(?! )[^<>]*?>`, 'g');
-const RE_PUNCT_OUTSIDE_CODE = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
 const RE_ANY_PUNCT = /\\([\p{P}\p{S}])/gu;
 const RE_ESCAPE = /\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/y;
 const RE_TAG = new RegExp(R`<!--(?:-?>|[\s\S]*?-->)|<\/[a-zA-Z][a-zA-Z0-9-]*\s*>|<[a-zA-Z][a-zA-Z0-9-]*(?:\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>\x60]+)?)*?\s*\/?>|<\?[\s\S]*?\?>|<![a-zA-Z]+\s[\s\S]*?>|<!\[CDATA\[[\s\S]*?\]\]>`, 'y');
@@ -367,19 +365,18 @@ function blockTokens(src, out, mergePara) {
       continue;
     }
 
-    RE_TEXT.lastIndex = pos;
-    m = RE_TEXT.exec(src);
-    if (m !== null) {
-      const raw = m[0];
-      pos += raw.length;
+    {
+      // marked's text rule [^\n]+ (pos is never at a newline here)
+      let e = src.indexOf('\n', pos);
+      if (e === -1) e = len;
+      const raw = src.slice(pos, e);
+      pos = e;
       const last = out[out.length - 1];
       if (last !== undefined && last.type === T_TEXT) {
         last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
         last.q.src += '\n' + raw;
       } else out.push({ type: T_TEXT, raw, q: newQ(raw) });
-      continue;
     }
-    break; // unreachable for well-formed input
   }
   top = true;
   return out;
@@ -584,6 +581,15 @@ function expandLead(s, col) {
   return expandTabs(s.slice(0, i), col) + s.slice(i);
 }
 
+// !s.trim(): only JS whitespace in s
+function isBlankStr(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c !== 32 && c !== 9 && !isJsSpace(c)) return false;
+  }
+  return true;
+}
+
 function firstNonSpace(s) {
   let i = 0;
   while (s.charCodeAt(i) === 32) i++;
@@ -687,7 +693,7 @@ function list(src, pos) {
     let le = src.indexOf('\n', e);
     if (le === -1) le = len;
     let next = src.slice(e, le);
-    let blankFirst = !line.trim();
+    let blankFirst = isBlankStr(line);
     let indent = 0;
     if (blankFirst) indent = b + 1;
     else {
@@ -708,7 +714,7 @@ function list(src, pos) {
         next = src.slice(e, le);
         if (itemBreak(next, ci, true)) break;
         const Z = expandLead(next, 0);
-        const nextBlank = !next.trim();
+        const nextBlank = isBlankStr(next);
         if (nextBlank || firstNonSpace(Z) >= indent) itemText += '\n' + Z.slice(indent);
         else {
           if (blankFirst) break;
@@ -1026,7 +1032,7 @@ for (let c = 0; c < 128; c++) {
   CLS[c] = k;
 }
 
-const RE_TEXT_STOP = /([\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/)|(www\.)|[^ ] {2,}\n|[^a-zA-Z0-9](?:mailto|xmpp):/g;
+const RE_TEXT_STOP = /([\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/)|(www\.)|( {2,}\n)|mailto:|xmpp:/g;
 
 /**
  * End of the inline text token marked's gfm `text` rule matches at p. `at` is the index of the next
@@ -1063,7 +1069,19 @@ function textEnd(s, p, at) {
         continue;
       }
       cEnd = i;
-    } else cEnd = i + 1;
+    } else if (m[3] !== undefined) {
+      // "x  \n": stop after the non-space character in front of the spaces (leftmost search
+      // guarantees that character is not a space, and it lies at or after q0)
+      cEnd = i;
+    } else {
+      // "xmailto:" / "xxmpp:" with x not alphanumeric
+      const b = s.charCodeAt(i - 1);
+      if (i - 1 < q0 || (b < 128 && CLS[b] & C_ALNUM)) {
+        RE_TEXT_STOP.lastIndex = i + 1;
+        continue;
+      }
+      cEnd = i;
+    }
     break;
   }
   if (at === -1) return cEnd;
@@ -1084,8 +1102,21 @@ function textEnd(s, p, at) {
   return cEnd;
 }
 
+// marked's punctuation rule ^((?![*_])[\s\p{P}\p{S}]) on a one-character (or one code point) string
 function isPunctSpace(ch) {
-  return ch !== '' && RE_PUNCT_SPACE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return c !== 42 && c !== 95 && kindOf(c) !== K_OTHER;
+  return RE_PUNCT_SPACE.test(ch);
+}
+
+// /[\p{L}\p{N}]/u.test(ch) for marked's prevChar strings
+function hasAlnum(ch) {
+  if (ch.length === 1) {
+    const c = ch.charCodeAt(0);
+    if (c < 128) return (CLS[c] & C_ALNUM) !== 0;
+  }
+  return RE_ALNUM_U.test(ch);
 }
 
 function lastCodePoint(s, l) {
@@ -1107,13 +1138,22 @@ function maskSrc(src) {
   const lt = src.indexOf('<') !== -1;
   let t = src;
   if (br && defCount > 0) t = t.replace(RE_REFSEARCH, refMask);
-  if (tick || bs) {
-    t = t.replace(RE_PUNCT_OUTSIDE_CODE, (all, ticks, punct) =>
-      punct ? '+'.repeat(all.length) : ticks ? ticks + all.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : all,
-    );
-  }
-  if (br || tick || lt) t = t.replace(RE_BLOCKSKIP, (all) => '[' + 'a'.repeat(all.length - 2) + ']');
+  // native regex passes beat hand-written scanners here: a single cold run never warms JS loops up
+  if (tick || bs) t = t.replace(RE_CODE_OR_ESCAPE, maskCodeOrEscape);
+  if (br || tick || lt) t = t.replace(RE_BLOCKSKIP, maskSkip);
   return t;
+}
+
+// inside a code span every inner backtick becomes "+"; an escaped punctuation character becomes "+"s
+const RE_CODE_OR_ESCAPE = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
+function maskCodeOrEscape(all, ticks, punct) {
+  if (punct) return '+'.repeat(all.length);
+  if (ticks) return ticks + all.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks;
+  return all;
+}
+// link spans, code spans and <...> spans become "[aaa]" of the same length
+function maskSkip(all) {
+  return '[' + 'a'.repeat(all.length - 2) + ']';
 }
 
 function refMask(r) {
@@ -1218,6 +1258,7 @@ function inline(src, plain) {
   while (pos < len) {
     if (!wasText) prev = '';
     wasText = false;
+    if (at !== -1 && at < pos) at = src.indexOf('@', pos);
     const c = src.charCodeAt(pos);
     let html = null;
     let end = -1;
@@ -1298,9 +1339,9 @@ function inline(src, plain) {
       }
       case 42:
       case 95: {
-        if (ctx === null) ctx = { masked: maskSrc(src), ast: -2, und: -2, til: -2 };
+        if (ctx === null) ctx = { masked: null, ast: -2, und: -2, til: -2 };
         html = emStrong(src, pos, prev, ctx, plain);
-        if (html === null && c === 95 && !inLink) html = tryUrl(src, pos, plain);
+        if (html === null && c === 95 && !inLink && urlCouldStart(src, pos, at)) html = tryUrl(src, pos, plain);
         if (html !== null) end = gEnd;
         break;
       }
@@ -1325,13 +1366,13 @@ function inline(src, plain) {
         break;
       }
       case 126: {
-        if (ctx === null) ctx = { masked: maskSrc(src), ast: -2, und: -2, til: -2 };
+        if (ctx === null) ctx = { masked: null, ast: -2, und: -2, til: -2 };
         html = del(src, pos, prev, ctx, plain);
         if (html !== null) end = gEnd;
         break;
       }
       default:
-        if (!inLink && ((c < 128 && CLS[c] & C_ALNUM) || c === 46 || c === 43 || c === 45)) {
+        if (!inLink && ((c < 128 && CLS[c] & C_ALNUM) || c === 46 || c === 43 || c === 45) && urlCouldStart(src, pos, at)) {
           html = tryUrl(src, pos, plain);
           if (html !== null) end = gEnd;
         }
@@ -1350,7 +1391,6 @@ function inline(src, plain) {
     }
 
     // inline text
-    if (at !== -1 && at < pos) at = src.indexOf('@', pos);
     end = textEnd(src, pos, at);
     if (runStart === -1) {
       runStart = pos;
@@ -1414,6 +1454,31 @@ function tryLink(src, pos, plain) {
   if (html === null) return null;
   gEnd = pos + raw.length;
   return html;
+}
+
+// Can marked's gfm url rule match at pos? It needs "http"/"ftp" (then "://"), "www.", "mailto:",
+// "xmpp:", or a run of [A-Za-z0-9._+-] reaching the next "@" (at: its index, -1 if none).
+function urlCouldStart(src, pos, at) {
+  const c = src.charCodeAt(pos);
+  if (c === 104 || c === 72) {
+    if ((src.charCodeAt(pos + 1) | 32) === 116 && (src.charCodeAt(pos + 2) | 32) === 116 && (src.charCodeAt(pos + 3) | 32) === 112) return true;
+  } else if (c === 102 || c === 70) {
+    if ((src.charCodeAt(pos + 1) | 32) === 116 && (src.charCodeAt(pos + 2) | 32) === 112) return true;
+  } else if (c === 119) {
+    if (src.startsWith('www.', pos)) return true;
+  } else if (c === 109) {
+    if (src.startsWith('mailto:', pos)) return true;
+  } else if (c === 120) {
+    if (src.startsWith('xmpp:', pos)) return true;
+  }
+  if (at === -1) return false;
+  let j = pos;
+  while (j < at) {
+    const d = src.charCodeAt(j);
+    if (!((d < 128 && CLS[d] & C_ALNUM) || d === 46 || d === 95 || d === 43 || d === 45)) return false;
+    j++;
+  }
+  return j > pos;
 }
 
 function tryUrl(src, pos, plain) {
@@ -1496,12 +1561,12 @@ function runGroup(prev, next, delim, tildeWord) {
 }
 
 // index of the first "*" or "_" at or after i, -1 if none
+const RE_NOT_EM = /[^_*]*/y;
 function nextEmChar(m, i) {
-  for (; i < m.length; i++) {
-    const c = m.charCodeAt(i);
-    if (c === 42 || c === 95) return i;
-  }
-  return -1;
+  RE_NOT_EM.lastIndex = i;
+  RE_NOT_EM.test(m);
+  const j = RE_NOT_EM.lastIndex;
+  return j < m.length ? j : -1;
 }
 
 // marked's closer regexes open with ^[^_*]*?__[^_*]*?\*[^_*]*?(?=__) (and its mirror for "_"):
@@ -1543,6 +1608,13 @@ function emStrong(src, pos, prevChar, ctx, plain) {
   const nk = kindOf(nx);
   if (nk === K_SPACE) return null;
   const opensPunct = nk === K_PUNCT && nx !== 126; // marked's s[1] / s[3]
+  if (src.charCodeAt(pos - 1) !== r) {
+    // masking never creates a delimiter, so the run cannot extend backwards in the masked text
+    // either: marked's early rejections below need only the previous text token's character
+    if (r === 95 && !opensPunct && hasAlnum(prevChar)) return null;
+    if (opensPunct && prevChar && !isPunctSpace(prevChar)) return null;
+  }
+  if (ctx.masked === null) ctx.masked = maskSrc(src);
   const masked = ctx.masked;
   const delim = r === 42 ? '*' : '_';
   const sameAsPrev = prevChar === delim;
@@ -1553,7 +1625,7 @@ function emStrong(src, pos, prevChar, ctx, plain) {
   let n = prevChar;
   if (l < pos) n = p;
   const u = l < pos ? pIsPunct : isPunctSpace(n);
-  if (r === 95 && !opensPunct && RE_ALNUM_U.test(n)) return null;
+  if (r === 95 && !opensPunct && hasAlnum(n)) return null;
   if (opensPunct && n && !u) return null;
   let remaining = k;
   let skipped = 0;
@@ -1616,6 +1688,7 @@ function del(src, pos, prevChar, ctx, plain) {
   const nk = kindOf(nx);
   if (nk === K_SPACE) return null;
   if (nk === K_PUNCT && prevChar && !isPunctSpace(prevChar)) return null;
+  if (ctx.masked === null) ctx.masked = maskSrc(src);
   const masked = ctx.masked;
   if (ctx.til === -2) ctx.til = lastRun(masked, '~');
   const u = ctx.til;
