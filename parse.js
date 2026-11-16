@@ -127,6 +127,27 @@ export function parse(markdown) {
   return html;
 }
 
+// Every block token has this one shape, so reads of its fields stay monomorphic.
+class Block {
+  constructor(type, raw) {
+    this.type = type;
+    this.raw = raw;
+    this.q = null; // inline queue entry (paragraph, text, heading)
+    this.check = -1; // task checkbox: -1 none, 0 unchecked, 1 checked
+    this.depth = 0;
+    this.text = '';
+    this.lang = '';
+    this.tokens = null;
+    this.ordered = false;
+    this.start = 0;
+    this.loose = false;
+    this.items = null;
+    this.align = null;
+    this.header = null;
+    this.body = null;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Small helpers
 
@@ -213,7 +234,7 @@ function blockTokens(src, out, mergePara) {
         pos += raw.length;
         const last = out[out.length - 1];
         if (raw.length === 1 && last !== undefined) last.raw += '\n';
-        else out.push({ type: T_SPACE, raw });
+        else out.push(new Block(T_SPACE, raw));
         continue;
       }
     }
@@ -229,7 +250,11 @@ function blockTokens(src, out, mergePara) {
         if (last !== undefined && (last.type === T_PARA || last.type === T_TEXT)) {
           last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
           last.q.src += '\n' + text;
-        } else out.push({ type: T_CODE, raw, text, lang: '' });
+        } else {
+          const b = new Block(T_CODE, raw);
+          b.text = text;
+          out.push(b);
+        }
         continue;
       }
     }
@@ -241,7 +266,10 @@ function blockTokens(src, out, mergePara) {
         if (m !== null) {
           const raw = m[0];
           pos += raw.length;
-          out.push({ type: T_CODE, raw, text: fenceIndent(raw, m[3] || ''), lang: m[2] ? m[2].trim().replace(RE_ANY_PUNCT, '$1') : m[2] });
+          const b = new Block(T_CODE, raw);
+          b.text = fenceIndent(raw, m[3] || '');
+          b.lang = m[2] ? m[2].trim().replace(RE_ANY_PUNCT, '$1') : '';
+          out.push(b);
           continue;
         }
       }
@@ -256,7 +284,10 @@ function blockTokens(src, out, mergePara) {
           }
           const raw = rtrimChar(m[0], '\n');
           pos += raw.length;
-          out.push({ type: T_HEADING, raw, depth: m[1].length, q: newQ(text) });
+          const b = new Block(T_HEADING, raw);
+          b.depth = m[1].length;
+          b.q = newQ(text);
+          out.push(b);
           continue;
         }
       }
@@ -266,7 +297,7 @@ function blockTokens(src, out, mergePara) {
         if (m !== null) {
           const raw = rtrimChar(m[0], '\n');
           pos += raw.length;
-          out.push({ type: T_HR, raw });
+          out.push(new Block(T_HR, raw));
           continue;
         }
       }
@@ -292,7 +323,9 @@ function blockTokens(src, out, mergePara) {
         if (m !== null) {
           const raw = trimBlankTail(m[0]);
           pos += raw.length;
-          out.push({ type: T_HTML, raw, text: raw });
+          const b = new Block(T_HTML, raw);
+          b.text = raw;
+          out.push(b);
           continue;
         }
       }
@@ -315,7 +348,7 @@ function blockTokens(src, out, mergePara) {
                 title: m[3] ? m[3].substring(1, m[3].length - 1).replace(RE_ANY_PUNCT, '$1') : m[3],
               };
             }
-            out.push({ type: T_DEF, raw });
+            out.push(new Block(T_DEF, raw));
           }
           continue;
         }
@@ -353,7 +386,10 @@ function blockTokens(src, out, mergePara) {
       if (m !== null) {
         const raw = rtrimChar(m[0], '\n');
         pos += raw.length;
-        out.push({ type: T_HEADING, raw, depth: m[2][0] === '=' ? 1 : 2, q: newQ(m[1].trim()) });
+        const b = new Block(T_HEADING, raw);
+        b.depth = m[2][0] === '=' ? 1 : 2;
+        b.q = newQ(m[1].trim());
+        out.push(b);
         continue;
       }
     }
@@ -364,7 +400,11 @@ function blockTokens(src, out, mergePara) {
       if (mergePara && last !== undefined && last.type === T_PARA) {
         last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
         last.q.src += '\n' + raw;
-      } else out.push({ type: T_PARA, raw, q: newQ(raw), check: -1 });
+      } else {
+        const b = new Block(T_PARA, raw);
+        b.q = newQ(raw);
+        out.push(b);
+      }
       mergePara = false;
       pos += raw.length;
       continue;
@@ -380,7 +420,11 @@ function blockTokens(src, out, mergePara) {
       if (last !== undefined && last.type === T_TEXT) {
         last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
         last.q.src += '\n' + raw;
-      } else out.push({ type: T_TEXT, raw, q: newQ(raw), check: -1 });
+      } else {
+        const b = new Block(T_TEXT, raw);
+        b.q = newQ(raw);
+        out.push(b);
+      }
     }
   }
   top = true;
@@ -562,7 +606,10 @@ function blockquote(src, pos) {
       continue;
     }
   }
-  return { type: T_BQ, raw, tokens: toks, text };
+  const b = new Block(T_BQ, raw);
+  b.tokens = toks;
+  b.text = text;
+  return b;
 }
 
 // leading spaces/tabs of s expanded to spaces as if s started at column col (marked's indentCodeCompensation-free J())
@@ -674,7 +721,10 @@ function list(src, pos) {
   const len = src.length;
   const bull = t[1].trim();
   const ordered = bull.length > 1;
-  const lst = { type: T_LIST, raw: '', ordered, start: ordered ? +bull.slice(0, -1) : '', loose: false, items: [] };
+  const lst = new Block(T_LIST, '');
+  lst.ordered = ordered;
+  lst.start = ordered ? +bull.slice(0, -1) : 0;
+  lst.items = [];
   const itemRe = ITEM_RE[bull[bull.length - 1]];
   let endsWithBlank = false;
   let e = pos;
@@ -761,7 +811,11 @@ function list(src, pos) {
       if (k !== null) {
         const checked = k[0] !== '[ ]';
         if (lst.loose) d.check = checked ? 1 : 0; // paragraph/text tokens carry check (-1: none)
-        else it.tokens.unshift({ type: T_CHECKBOX, raw: '', checked });
+        else {
+          const b = new Block(T_CHECKBOX, '');
+          b.check = checked ? 1 : 0;
+          it.tokens.unshift(b);
+        }
       }
     } else if (it.task) it.task = false;
   }
@@ -805,7 +859,11 @@ function table(src, pos) {
   const align = aligns.map((a) => (/^ *-+: *$/.test(a) ? 'right' : /^ *:-+: *$/.test(a) ? 'center' : /^ *:-+ *$/.test(a) ? 'left' : null));
   const header = head.map((h) => newQ(h));
   const body = rows.map((r) => splitCells(r, head.length).map((c) => newQ(c)));
-  return { type: T_TABLE, raw: rtrimChar(m[0], '\n'), align, header, body };
+  const b = new Block(T_TABLE, rtrimChar(m[0], '\n'));
+  b.align = align;
+  b.header = header;
+  b.body = body;
+  return b;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -868,7 +926,7 @@ function renderBlocks(toks) {
         break;
       }
       case T_CHECKBOX:
-        out += checkboxHtml(t.checked);
+        out += checkboxHtml(t.check === 1);
         break;
     }
   }
