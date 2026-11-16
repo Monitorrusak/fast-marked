@@ -19,9 +19,26 @@ How it gets there:
 - blocks with inline content are rendered in the order marked lexes them, so state marked carries
   between blocks (an unclosed `<a>` tag, raw `<pre>` spans) behaves the same.
 
+- emphasis and strikethrough closers are found by classifying each delimiter run from the
+  characters on either side of it (the same decision marked's closer regexes make), on the same
+  masked text marked uses;
+- V8 is kept on its optimized code: reads never run off the end of a string, block tokens share
+  one shape, and `main.ts` runs without TurboFan (Maglev stays the optimizing tier) and streams
+  `html.json` out as it goes.
+
 `parse.js` is the module, `main.ts` the program the bounty harness runs (it reads
 `/input/cases.json` and writes `/output/html.json`; `MAKEFUN_INPUT_DIR` and `MAKEFUN_OUTPUT_DIR`
-override the two directories). `tools/` holds the differential test and benchmark scripts.
+override the two directories). `tools/` holds the test and benchmark scripts:
+
+- `tools/diff.mjs` compares the output with reference HTML (the kit's practice set, or instances
+  drawn with the kit's generator by `tools/gen.sh`);
+- `tools/fuzz.mjs` compares with marked itself on random inline soups, random block layouts and
+  mutated spec examples and documents;
+- `tools/cpu.mjs` and `tools/ab.mjs` measure process CPU against marked and between versions.
+
+Checked identical to marked on the practice set, on 40 more instances drawn from other seeds
+(1,600 generated READMEs plus the 680 spec examples each time) and on over a million fuzz inputs.
+On the practice set it uses about 2.2x less CPU than marked, net of Node's start-up.
 
 ## Run it
 
