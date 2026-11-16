@@ -179,7 +179,11 @@ function expandTabs(s, col) {
   return out;
 }
 
+const RE_SIMPLE_LABEL = /^[!-~]+(?: [!-~]+)*$/;
 function normLabel(s) {
+  // printable ASCII words joined by single spaces: trimming and collapsing change nothing, and the
+  // lower/upper/lower round trip is plain lower-casing
+  if (RE_SIMPLE_LABEL.test(s)) return s.toLowerCase();
   return s.trim().replace(/\s+/g, ' ').toLowerCase().toUpperCase().toLowerCase();
 }
 
@@ -263,7 +267,7 @@ function blockTokens(src, out, mergePara) {
           pos += raw.length;
           const b = new Block(T_CODE, raw);
           b.text = fenceIndent(raw, m[3] || '');
-          b.lang = m[2] ? m[2].trim().replace(RE_ANY_PUNCT, '$1') : '';
+          b.lang = m[2] ? unescapePunct(m[2].trim()) : '';
           out.push(b);
           continue;
         }
@@ -339,8 +343,8 @@ function blockTokens(src, out, mergePara) {
             if (!(tag in links)) {
               defCount++;
               links[tag] = {
-                href: m[2] ? m[2].replace(/^<(.*)>$/, '$1').replace(RE_ANY_PUNCT, '$1') : '',
-                title: m[3] ? m[3].substring(1, m[3].length - 1).replace(RE_ANY_PUNCT, '$1') : m[3],
+                href: m[2] ? unescapePunct(m[2].replace(/^<(.*)>$/, '$1')) : '',
+                title: m[3] ? unescapePunct(m[3].substring(1, m[3].length - 1)) : m[3],
               };
             }
             out.push(new Block(T_DEF, raw));
@@ -1006,7 +1010,39 @@ const escChar = (c) => ESC_MAP[c];
 
 /** marked's escape(s, true): every & < > " ' */
 function escapeAll(s) {
-  return /[&<>"']/.test(s) ? s.replace(/[&<>"']/g, escChar) : s;
+  if (!RE_HTML_SPECIAL.test(s)) return s;
+  let out = '';
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    let rep;
+    switch (s.charCodeAt(i)) {
+      case 38:
+        rep = '&amp;';
+        break;
+      case 60:
+        rep = '&lt;';
+        break;
+      case 62:
+        rep = '&gt;';
+        break;
+      case 34:
+        rep = '&quot;';
+        break;
+      case 39:
+        rep = '&#39;';
+        break;
+      default:
+        continue;
+    }
+    out += s.slice(last, i) + rep;
+    last = i + 1;
+  }
+  return out + s.slice(last);
+}
+
+// marked's backslash-unescaping of hrefs, titles and info strings: \ before punctuation or a symbol
+function unescapePunct(s) {
+  return s.indexOf('\\') === -1 ? s : s.replace(RE_ANY_PUNCT, '$1');
 }
 
 function isWordCode(c) {
@@ -1477,7 +1513,7 @@ function labelSpillsTag(src, start, label) {
 
 // output of the inline pass for one link/image; null when marked rejects it
 function linkOrImage(isImage, label, href, title, plain) {
-  const text = label.replace(/\\([\[\]])/g, '$1');
+  const text = label.indexOf('\\') === -1 ? label : label.replace(/\\([\[\]])/g, '$1');
   const savedInLink = inLink, savedEmitted = linkEmitted, savedRaw = inRawBlock;
   inLink = true;
   linkEmitted = false;
@@ -1629,7 +1665,7 @@ function inline(src, plain) {
         RE_CODESPAN.lastIndex = pos;
         const m = RE_CODESPAN.exec(src);
         if (m !== null) {
-          let t = m[2].replace(/\n/g, ' ');
+          let t = m[2].indexOf('\n') === -1 ? m[2] : m[2].replace(/\n/g, ' ');
           if (/[^ ]/.test(t) && t[0] === ' ' && t[t.length - 1] === ' ') t = t.substring(1, t.length - 1);
           end = pos + m[0].length;
           html = plain ? t : '<code>' + escapeAll(t) + '</code>';
@@ -1729,7 +1765,7 @@ function tryLink(src, pos, plain) {
   title = title ? title.slice(1, -1) : '';
   href = href.trim();
   if (href[0] === '<') href = href.slice(1, -1);
-  const html = linkOrImage(isImage, m[1], href && href.replace(RE_ANY_PUNCT, '$1'), title && title.replace(RE_ANY_PUNCT, '$1'), plain);
+  const html = linkOrImage(isImage, m[1], href && unescapePunct(href), title && unescapePunct(title), plain);
   if (html === null) return null;
   gEnd = pos + raw.length;
   return html;
