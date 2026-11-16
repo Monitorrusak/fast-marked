@@ -561,8 +561,8 @@ function blockquote(src, pos) {
     }
     lines = lines.slice(p);
     const h = cur.join('\n');
-    const u = h
-      .replace(RE_BQ_MARKER_WS, (g, b, w) => b + expandTabs(w, b.length))
+    // (expanding the blanks after ">" only changes anything when there is a tab)
+    const u = (h.indexOf('\t') === -1 ? h : h.replace(RE_BQ_MARKER_WS, (g, b, w) => b + expandTabs(w, b.length)))
       .replace(RE_BQ_SETEXT, '\n    $1')
       .replace(RE_BQ_STRIP, '');
     raw = raw ? raw + '\n' + h : h;
@@ -709,6 +709,45 @@ function itemBreak(line, ci, full) {
   return false;
 }
 
+// itemBreak(line, ci, true) for the line src[e, le) whose first non-space character fc is at f
+// (f - e <= ci): the same checks made by position, without cutting the line out of src.
+function itemBreakAt(src, e, f, fc, le, ci) {
+  switch (fc) {
+    case 96:
+      return src.startsWith('```', f);
+    case 126:
+      return src.startsWith('~~~', f);
+    case 35: {
+      let j = f;
+      while (j < le && src.charCodeAt(j) === 35) j++;
+      return j - f <= 6 && (j >= le || isJsSpace(src.charCodeAt(j)));
+    }
+    case 60:
+      return HTML_IND[ci].test(src.slice(e, le));
+    case 62:
+      return true;
+    case 95:
+      return HR_IND[ci].test(src.slice(e, le));
+    case 42:
+    case 43:
+    case 45: {
+      const d = f + 1 < le ? src.charCodeAt(f + 1) : -1;
+      if (d === -1 || d === 32 || d === 9) return true;
+      return fc !== 43 && HR_IND[ci].test(src.slice(e, le));
+    }
+  }
+  if (fc >= 48 && fc <= 57) {
+    let j = f + 1;
+    while (j - f < 9 && j < le && src.charCodeAt(j) >= 48 && src.charCodeAt(j) <= 57) j++;
+    const d = j < le ? src.charCodeAt(j) : -1;
+    if (d === 46 || d === 41) {
+      const g = j + 1 < le ? src.charCodeAt(j + 1) : -1;
+      return g === -1 || g === 32 || g === 9;
+    }
+  }
+  return false;
+}
+
 function list(src, pos) {
   RE_LIST.lastIndex = pos;
   let t = RE_LIST.exec(src);
@@ -756,20 +795,44 @@ function list(src, pos) {
       while (e < len) {
         le = src.indexOf('\n', e);
         if (le === -1) le = len;
-        next = src.slice(e, le);
-        if (itemBreak(next, ci, true)) break;
-        const Z = expandLead(next, 0);
-        const nextBlank = isBlankStr(next);
-        if (nextBlank || firstNonSpace(Z) >= indent) itemText += '\n' + Z.slice(indent);
+        // leading spaces of the line and the character after them (-1 for a blank line)
+        let f = e;
+        while (f < le && src.charCodeAt(f) === 32) f++;
+        const sp = f - e;
+        const fc = f < le ? src.charCodeAt(f) : -1;
+        if (fc === 9) {
+          // tab in the indentation: the general path on the line string
+          next = src.slice(e, le);
+          if (itemBreak(next, ci, true)) break;
+          const Z = expandLead(next, 0);
+          const nextBlank = isBlankStr(next);
+          if (nextBlank || firstNonSpace(Z) >= indent) itemText += '\n' + Z.slice(indent);
+          else {
+            if (blankFirst) break;
+            if (tabWidthIndent(line) >= 4) break;
+            if (itemBreak(line, ci, false)) break;
+            itemText += '\n' + (/^ {0,3}(?:=+|-+) *$/.test(next) && RE_LHEADING_A.test(line + '\n' + next) ? '    ' + Z.replace(/^ {0,3}/, '') : next);
+          }
+          blankFirst = nextBlank;
+          e = le + 1 > len ? len : le + 1;
+          line = Z.slice(indent);
+          continue;
+        }
+        if (fc !== -1 && sp <= ci && itemBreakAt(src, e, f, fc, le, ci)) break;
+        // no tab in the indentation, so the expanded line is the line itself
+        const nextBlank = fc === -1 || (isJsSpace(fc) && isBlankStr(src.slice(f, le)));
+        const rest = e + indent < le ? src.slice(e + indent, le) : '';
+        if (nextBlank || sp >= indent) itemText += '\n' + rest;
         else {
           if (blankFirst) break;
           if (tabWidthIndent(line) >= 4) break;
           if (itemBreak(line, ci, false)) break;
-          itemText += '\n' + (/^ {0,3}(?:=+|-+) *$/.test(next) && RE_LHEADING_A.test(line + '\n' + next) ? '    ' + Z.replace(/^ {0,3}/, '') : next);
+          next = src.slice(e, le);
+          itemText += '\n' + (/^ {0,3}(?:=+|-+) *$/.test(next) && RE_LHEADING_A.test(line + '\n' + next) ? '    ' + next.replace(/^ {0,3}/, '') : next);
         }
         blankFirst = nextBlank;
         e = le + 1 > len ? len : le + 1;
-        line = Z.slice(indent);
+        line = rest;
       }
     }
     const itemRaw = src.slice(k, e);
@@ -839,7 +902,10 @@ function splitCells(row, count) {
     if (cells.length > count) cells.splice(count);
     else while (cells.length < count) cells.push('');
   }
-  for (let i = 0; i < cells.length; i++) cells[i] = cells[i].trim().replace(/\\\|/g, '|');
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i].trim();
+    cells[i] = c.indexOf('\\|') === -1 ? c : c.replace(/\\\|/g, '|');
+  }
   return cells;
 }
 
