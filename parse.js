@@ -103,14 +103,8 @@ const RE_DEL_R = new RegExp(
   R`^[^~]+(?=[^~])|(?!~)${P0}(~~?)(?=[\s]|$)|${NPS0}(~~?)(?!~)(?=${PS0}|$)|(?!~)${PS0}(~~?)(?=${NPS0})|[\s](~~?)(?!~)(?=${P0})|(?!~)${P0}(~~?)(?!~)(?=${P0})|${NPS0}(~~?)(?=${NPS0})`,
   'gu',
 );
-const RE_EM_R_AST = new RegExp(
-  R`^[^_*]*?__[^_*]*?\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\*)${PT}(\*+)(?=[\s]|$)|${NPST}(\*+)(?!\*)(?=${PST}|$)|(?!\*)${PST}(\*+)(?=${NPST})|[\s](\*+)(?!\*)(?=${PT})|(?!\*)${PT}(\*+)(?!\*)(?=${PT})|${NPST}(\*+)(?=${NPST})`,
-  'gu',
-);
-const RE_EM_R_UND = new RegExp(
-  R`^[^_*]*?\*\*[^_*]*?_[^_*]*?(?=\*\*)|[^_]+(?=[^_])|(?!_)${P0}(_+)(?=[\s]|$)|${NPS0}(_+)(?!_)(?=${PS0}|$)|(?!_)${PS0}(_+)(?=${NPS0})|[\s](_+)(?!_)(?=${P0})|(?!_)${P0}(_+)(?!_)(?=${P0})`,
-  'gu',
-);
+// (the emphasis right-delimiter rules, RE_EM_R_AST / RE_EM_R_UND in marked, are implemented
+// by emStrong's run scanner and flankGroup below)
 const RE_PUNCTUATION = new RegExp(R`^((?![*_])${PS0})`, 'u');
 const RE_UNICODE_ALNUM = /[\p{L}\p{N}]/u;
 const EMAIL_TAIL = R`[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![\w-])`;
@@ -239,6 +233,7 @@ function splitCells(row, count) {
 // Per-document state (reset by every parse call; nothing survives from one call to the next)
 
 let links = null; // label -> {href, title}
+let linkCount = 0;
 let queue = null; // inline jobs in the order marked would lex them
 let top = true;
 let inLink = false;
@@ -344,7 +339,10 @@ function blockTokens(src, tokens, mergeFirst) {
         prev.text += '\n' + tok.raw;
         queue[queue.length - 1].src = prev.text;
       } else {
-        if (!links[tok.tag]) links[tok.tag] = { href: tok.href, title: tok.title };
+        if (!links[tok.tag]) {
+          links[tok.tag] = { href: tok.href, title: tok.title };
+          linkCount++;
+        }
         tokens.push(tok);
       }
       continue;
@@ -767,33 +765,86 @@ function table(src) {
 // Inline level. lexInline returns rendered HTML (or, in text mode, the plain text marked's
 // TextRenderer produces, which image alt attributes use).
 
-/** marked's emphasis masking: hide link text, code spans and escapes from delimiter search. */
-function maskSource(src) {
-  let t = src;
-  if (src.includes('[')) {
-    const swap = (r) => {
-      const o = r.lastIndexOf('[');
-      if (!Object.hasOwn(links, normLabel(r.slice(o + 1, -1)))) return r;
-      if (o > 1 && r.charAt(0) !== '!') {
-        const inner = r.slice(1, o - 1);
-        if (linkInText(inner)) return '[' + inner.replace(RE_REFLINK_SEARCH, swap) + '][' + 'a'.repeat(r.length - o - 2) + ']';
-      }
-      return '[' + 'a'.repeat(r.length - 2) + ']';
-    };
-    t = t.replace(RE_REFLINK_SEARCH, swap);
+/** A reference link marked masks: a defined label becomes 'a's (the same length as r). */
+function maskRef(r) {
+  const o = r.lastIndexOf('[');
+  if (!Object.hasOwn(links, normLabel(r.slice(o + 1, -1)))) return r;
+  if (o > 1 && r.charAt(0) !== '!') {
+    const inner = r.slice(1, o - 1);
+    if (linkInText(inner)) return '[' + inner.replace(RE_REFLINK_SEARCH, maskRef) + '][' + 'a'.repeat(r.length - o - 2) + ']';
   }
-  const tick = t.includes('`');
-  if (tick || t.includes('\\')) {
-    t = t.replace(RE_ANY_PUNCT_OUTSIDE_CODE, (n, fence, esc) =>
-      esc ? '+'.repeat(n.length) : fence ? fence + n.slice(fence.length, -fence.length).replace(/`/g, '+') + fence : n,
-    );
+  return '[' + 'a'.repeat(r.length - 2) + ']';
+}
+/** Its own copy, so maskRef's nested use of RE_REFLINK_SEARCH cannot move this loop's lastIndex. */
+const LOOP_REFLINK_SEARCH = new RegExp(RE_REFLINK_SEARCH.source, 'g');
+
+/**
+ * marked's emphasis masking: hide reference labels, escapes, code spans, links and tags from the
+ * delimiter search, keeping every index where it was. Same three passes as marked's replace()
+ * calls, written as exec loops that rebuild the string only when a match really changes.
+ */
+function maskSource(src) {
+  // pieces are joined at the end of each pass, so the result is a flat string (character
+  // reads on a deep rope of concatenations would be slow in emStrong)
+  let t = src;
+  let m, parts, last;
+  if (linkCount > 0 && t.indexOf('[') !== -1) {
+    const re = LOOP_REFLINK_SEARCH;
+    re.lastIndex = 0;
+    parts = null;
+    last = 0;
+    while ((m = re.exec(t)) !== null) {
+      const rep = maskRef(m[0]);
+      if (rep !== m[0]) {
+        (parts ??= []).push(t.slice(last, m.index), rep);
+        last = m.index + m[0].length;
+      }
+    }
+    if (parts !== null) {
+      parts.push(t.slice(last));
+      t = parts.join('');
+    }
+  }
+  const tick = t.indexOf('`') !== -1;
+  if (tick || t.indexOf('\\') !== -1) {
+    const re = RE_ANY_PUNCT_OUTSIDE_CODE;
+    re.lastIndex = 0;
+    parts = null;
+    last = 0;
+    while ((m = re.exec(t)) !== null) {
+      const n = m[0];
+      let rep;
+      if (m[2] !== undefined) rep = '+'.repeat(n.length); // an escaped punctuation character
+      else if (m[1] !== undefined) {
+        // a code span: backticks inside it (other run lengths) become '+'
+        const inner = n.slice(m[1].length, -m[1].length);
+        if (inner.indexOf('`') === -1) continue;
+        rep = m[1] + inner.replace(/`/g, '+') + m[1];
+      } else continue;
+      (parts ??= []).push(t.slice(last, m.index), rep);
+      last = m.index + n.length;
+    }
+    if (parts !== null) {
+      parts.push(t.slice(last));
+      t = parts.join('');
+    }
   }
   // links need '[', code spans '`' and tags '<' (a code span masked above still has its backticks)
-  if (tick || t.includes('[') || t.includes('<')) {
-    t = t.replace(RE_BLOCK_SKIP, (n, a, pre) => {
-      const o = pre ? pre.length : 0;
-      return n.slice(0, o) + '[' + 'a'.repeat(n.length - o - 2) + ']';
-    });
+  if (tick || t.indexOf('[') !== -1 || t.indexOf('<') !== -1) {
+    const re = RE_BLOCK_SKIP;
+    re.lastIndex = 0;
+    parts = null;
+    last = 0;
+    while ((m = re.exec(t)) !== null) {
+      const n = m[0];
+      const o = m[2] ? m[2].length : 0;
+      (parts ??= []).push(t.slice(last, m.index), n.slice(0, o), '[', 'a'.repeat(n.length - o - 2), ']');
+      last = m.index + n.length;
+    }
+    if (parts !== null) {
+      parts.push(t.slice(last));
+      t = parts.join('');
+    }
   }
   return t;
 }
@@ -949,9 +1000,9 @@ function mailOrXmpp(s, i) {
 
 // Whether the e-mail look-aheads can apply at all (checked once per job; a nested source is
 // part of its parent, so the parent's answer stays a safe superset).
-const HAS_AT = 1;
+const HAS_AT = 1, HAS_REF = 2; // '@' (e-mail look-aheads), "&#" (numeric references to decode)
 function rareFeatures(s) {
-  return s.indexOf('@') !== -1 ? HAS_AT : 0;
+  return (s.indexOf('@') !== -1 ? HAS_AT : 0) | (s.indexOf('&#') !== -1 ? HAS_REF : 0);
 }
 
 /** 0: ordinary, 1: always stops, 2: may start "http", 3: may start "ftp://", 4: may start "www." */
@@ -1035,8 +1086,9 @@ function emailEnd(s, u, ctx) {
 }
 
 /** Can marked's gfm `url` rule match at pos? (a cheap, conservative pre-check) */
-function urlPossible(s, pos, c) {
+function urlPossible(s, pos, c, hasAt) {
   if (c === 104 || c === 72 || c === 102 || c === 70 || c === 119 || c === 109 || c === 120) return true;
+  if (!hasAt) return false;
   // the bare e-mail alternative: [A-Za-z0-9._+-]+@
   let j = pos;
   const n = s.length;
@@ -1138,13 +1190,13 @@ function runHtml(s, start, end, str, esc, textMode) {
 
 function lexInlineInner(s, textMode, features) {
   const n = s.length;
-  const ctx = { whole: s, masked: null, closers: null, hasAt: features !== 0, atNext: -2 };
+  const ctx = { whole: s, masked: null, closers: null, hasAt: (features & HAS_AT) !== 0, atNext: -2 };
   let out = '';
   // the pending run of text tokens marked would merge into one: s[runStart, runEnd), or runStr
   // once a token's text differs from its source (a decoded numeric character reference)
   let runStart = -1, runEnd = 0, runStr = null, runEsc = false;
   let prevWasText = false, prevChar = '';
-  let nextRef = -2; // index of the next "&#" at or after pos (-1: none, -2: not looked up)
+  let nextRef = (features & HAS_REF) !== 0 ? -2 : -1; // next "&#" at or after pos (-1: none, -2: not looked up)
   let pos = 0;
   let m;
   while (pos < n) {
@@ -1234,7 +1286,7 @@ function lexInlineInner(s, textMode, features) {
         html = strike(s, pos, ctx, prevChar, textMode, features);
         break;
     }
-    if (html === null && !inLink && urlPossible(s, pos, c)) {
+    if (html === null && !inLink && urlPossible(s, pos, c, ctx.hasAt)) {
       Y_URL.lastIndex = pos;
       if ((m = Y_URL.exec(s))) {
         let text, href;
@@ -1354,6 +1406,77 @@ function codePointBefore(masked, l) {
   return masked[l - 1];
 }
 
+// --- emphasis right-delimiter classification ---------------------------------------------
+// Character classes of marked's flanking tests: 0 other, 1 whitespace (\s), 2 punctuation or
+// symbol (\p{P} or \p{S}).
+const ASCII_CLASS = new Uint8Array(128);
+for (let c = 0; c < 128; c++) {
+  const ch = String.fromCharCode(c);
+  ASCII_CLASS[c] = /\s/.test(ch) ? 1 : /[\p{P}\p{S}]/u.test(ch) ? 2 : 0;
+}
+const RE_PS = /[\p{P}\p{S}]/u;
+/** Class of the code point of length len at index i of s. */
+function cpClass(s, i, len) {
+  const c = s.charCodeAt(i);
+  if (c < 128) return ASCII_CLASS[c];
+  if (len === 1 && isJsSpace(c)) return 1;
+  return RE_PS.test(len === 1 ? s[i] : s.slice(i, i + 2)) ? 2 : 0;
+}
+
+/**
+ * Which capturing alternative of RE_EM_R_AST (ast) or RE_EM_R_UND matches the delimiter run
+ * s[a, b) together with the code point at bi (bl units long) just before it: 1 to 6, or 0.
+ * For '*' a tilde counts as an ordinary character rather than punctuation.
+ */
+function flankGroup(s, bi, bl, b, ast) {
+  let cb = cpClass(s, bi, bl);
+  const eos = b >= s.length;
+  let ca = -1;
+  let al = 1;
+  if (!eos) {
+    const c = s.charCodeAt(b);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = s.charCodeAt(b + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) al = 2;
+    }
+    ca = cpClass(s, b, al);
+  }
+  if (ast) {
+    if (bl === 1 && s.charCodeAt(bi) === 126) cb = 0; // '~' is "not punctuation" here
+    if (!eos && al === 1 && s.charCodeAt(b) === 126) ca = 0;
+  }
+  if (cb === 2 && (eos || ca === 1)) return 1;
+  if (cb === 0 && (eos || ca !== 0)) return 2;
+  if (eos) return 0;
+  if (cb !== 0 && ca === 0) return 3;
+  if (cb === 1 && ca === 2) return 4;
+  if (cb === 2 && ca === 2) return 5;
+  if (ast && cb === 0 && ca === 0) return 6;
+  return 0;
+}
+
+/**
+ * The first alternative of RE_EM_R_AST (`^[^_*]*?__[^_*]*?\*[^_*]*?(?=__)`, and its mirror in
+ * RE_EM_R_UND) is anchored: when it matches at `start` it swallows one delimiter that sits
+ * between two doubled `other` delimiters. Returns how far it reaches (0 when it does not match).
+ */
+function hiddenLead(s, start, other, own) {
+  const i = nextDelim(s, start);
+  if (i === -1 || s.charCodeAt(i) !== other || s.charCodeAt(i + 1) !== other) return 0;
+  const j = nextDelim(s, i + 2);
+  if (j === -1 || s.charCodeAt(j) !== own) return 0;
+  const k = nextDelim(s, j + 1);
+  if (k === -1 || s.charCodeAt(k) !== other || s.charCodeAt(k + 1) !== other) return 0;
+  return k - start;
+}
+function nextDelim(s, i) {
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 42 || c === 95) return i;
+  }
+  return -1;
+}
+
 function emStrong(s, pos, ctx, prevChar, textMode, features) {
   Y_EM_L.lastIndex = pos;
   let m = Y_EM_L.exec(s);
@@ -1375,22 +1498,41 @@ function emStrong(s, pos, ctx, prevChar, textMode, features) {
   let midDelimTotal = 0;
   const runLen = pos - l + lLength;
   const strictLeft = !!before.trim() && (!!punctAfter || (ch === '*' && !beforeIsPunct));
-  const rRe = ch === '*' ? RE_EM_R_AST : RE_EM_R_UND;
   const closer = lastCloser(ctx, ch);
   const startIn = pos + lLength;
   if (closer < startIn) return null;
-  const rest = masked.slice(startIn);
   const limit = closer - startIn;
-  rRe.lastIndex = 0;
-  while ((m = rRe.exec(rest)) !== null && !(m.index > limit)) {
-    const rDelim = m[1] || m[2] || m[3] || m[4] || m[5] || m[6];
-    if (!rDelim) continue;
-    let rLength = rDelim.length; // a run of one delimiter character
-    if (m[3] || m[4]) {
+  // marked runs RE_EM_R_AST / RE_EM_R_UND as a global exec loop over the masked text after
+  // the opener. Only matches that capture a delimiter run count, and a run is captured whole,
+  // together with the code point before it, by the first alternative whose flanking test
+  // (on that code point and the one after the run) holds. So: visit each run of `ch` and
+  // classify it the same way. (Indexes below are relative to startIn.)
+  const ast = ch === '*';
+  const code = ast ? 42 : 95;
+  const n = masked.length;
+  let from = startIn + hiddenLead(masked, startIn, ast ? 95 : 42, code);
+  for (;;) {
+    const a = masked.indexOf(ch, from);
+    if (a === -1) break;
+    let b = a + 1;
+    while (b < n && masked.charCodeAt(b) === code) b++;
+    from = b;
+    if (a === startIn) continue; // nothing before the run inside the searched text
+    let bl = 1;
+    const bc = masked.charCodeAt(a - 1);
+    if (bc >= 0xdc00 && bc <= 0xdfff && a - 2 >= startIn) {
+      const h = masked.charCodeAt(a - 2);
+      if (h >= 0xd800 && h <= 0xdbff) bl = 2;
+    }
+    if (a - bl - startIn > limit) break;
+    const group = flankGroup(masked, a - bl, bl, b, ast);
+    if (group === 0) continue;
+    let rLength = b - a;
+    if (group === 3 || group === 4) {
       delimTotal += rLength;
       continue;
-    } else if (m[5] || m[6] || strictLeft) {
-      if (sameAsPrev && (m[5] || m[6])) break;
+    } else if (group >= 5 || strictLeft) {
+      if (sameAsPrev && group >= 5) break;
       if (runLen % 3 && !((runLen + rLength) % 3)) {
         midDelimTotal += rLength;
         continue;
@@ -1399,7 +1541,7 @@ function emStrong(s, pos, ctx, prevChar, textMode, features) {
     delimTotal -= rLength;
     if (delimTotal > 0) continue;
     rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
-    const end = pos + lLength + m.index + firstCodePointLength(m[0]) + rLength;
+    const end = a + rLength;
     if (Math.min(lLength, rLength) % 2) {
       const inner = lexInline(s.slice(pos + 1, end - 1), textMode, features);
       lastEnd = end;
@@ -1518,6 +1660,7 @@ function cell(tag, align, job) {
 /** Render `markdown` to HTML exactly as marked 18.1.3 does with its default options. */
 export function parse(markdown) {
   links = Object.create(null);
+  linkCount = 0;
   queue = [];
   top = true;
   inLink = false;
