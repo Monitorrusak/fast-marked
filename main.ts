@@ -4,7 +4,12 @@
 // relocate those two directories for local runs.
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
 import { parse } from './parse.js';
+
+// One short run: V8's optimising compiler (TurboFan) spends more CPU compiling than it saves
+// here, while the baseline and mid-tier compilers (Sparkplug, Maglev) pay off quickly.
+setFlagsFromString('--no-turbofan');
 
 const inputDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
