@@ -20,7 +20,6 @@ const HR_NC = R` {0,3}(?:(?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+
 const HEAD_OPEN = R` {0,3}#{1,6}(?:\s|$)`;
 const FENCE_OPEN = R` {0,3}(?:\x60{3,}(?=[^\x60\n]*(?:\n|$))|~~~)[^\n]*(?:\n|$)`;
 const HTML_OPEN = R` {0,3}(?:<\/?(?:${TAGS})(?: +|\n|\/?>)|<(?:(?:script|pre|style|textarea)(?:[\s>]|$)|!--)|<\?|<![A-Za-z]|<!\[CDATA\[)`;
-const BQ_PARA = R`[^\n]+(?:\n(?!${HR_CAP}|${HEAD_OPEN}| {0,3}>|${FENCE_OPEN}| {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]|\n|$)|${HTML_OPEN}|[ \t]+\n)[^\n]+)*`;
 const LH_BULL = R` {0,3}(?:[*+-]|\d{1,9}[.)]) `;
 const LH_FENCE = R` {0,3}(?:\x60{3,}|~{3,})`;
 const LH_HTML = R` {0,3}<[^\n>]+>\n`;
@@ -32,7 +31,6 @@ const RE_CODE = /(?:(?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/y;
 const RE_FENCES = / {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}(?:(?=`)\1`*|(?=~)\1~*) *(?=\n|$)|$)/y;
 const RE_HEADING = / {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/y;
 const RE_HR = new RegExp(HR_CAP, 'y');
-const RE_BQ = new RegExp(R`(?: {0,3}> ?(?:(?![ \t]*(?:\n|$))${BQ_PARA}|[^\n]*)(?:\n|$))+`, 'y');
 const RE_LIST = /( {0,3}(?:[*+-]|\d{1,9}[.)]))([ \t][^\n]*?)?(?:\n|$)/y;
 const RE_HTML = new RegExp(R` {0,3}(?:<(script|pre|style|textarea)[\s>][\s\S]*?(?:<\/\1>[^\n]*\n*|$)|<!--(?:-?>|[\s\S]*?(?:-->|$))[^\n]*(\n+|$)|<\?[\s\S]*?(?:\?>[^\n]*\n*|$)|<![A-Z][\s\S]*?(?:>[^\n]*\n*|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>[^\n]*\n*|$)|<\/?(${TAGS})(?:[ \t]+|\n|\/?>|$)[\s\S]*?(?:(?:\n[ \t]*)+\n|$)|<(?!(?:script|pre|style|textarea)(?![a-z0-9-]))([a-z][a-z0-9-]*)(?: +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>\x60]+)?)*? *\/?>(?=[ \t]*(?:\n|$))[\s\S]*?(?:(?:\n[ \t]*)+\n|$)|<\/[a-z][a-z0-9-]*\s*>(?=[ \t]*(?:\n|$))[\s\S]*?(?:(?:\n[ \t]*)+\n|$))`, 'iy');
 const RE_DEF = new RegExp(R` {0,3}\[((?!\s*\])(?:\\[\s\S]|[^\[\]\\\n]|\n(?![ \t]*\n))+)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)((?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\\n]|\n(?!\n))*'|\((?:\\[\s\S]|[^()\\])*\))))? *(?:\n+|$)`, 'y');
@@ -544,10 +542,90 @@ function fenceIndent(raw, text) {
     .join('\n');
 }
 
+// Does the line at ls end the lazy paragraph inside marked's blockquote rule? It must be
+// non-empty and open none of: a rule, an ATX heading, ">", a fence, a list marker followed by a
+// blank or the line end, an HTML block, or be blank ([ \t]+\n).
+function bqParaBreak(src, ls) {
+  const n = src.length;
+  let i = ls;
+  let c = src.charCodeAt(i);
+  if (c === 10) return true;
+  while (c === 32 || c === 9) c = ++i < n ? src.charCodeAt(i) : -1;
+  if (c === 10) return true;
+  i = ls;
+  c = src.charCodeAt(i);
+  while (c === 32 && i - ls < 3) c = ++i < n ? src.charCodeAt(i) : -1;
+  switch (c) {
+    case 62:
+      return true;
+    case 35:
+      return headingOpensAt(src, i);
+    case 96:
+    case 126:
+      RE_FENCE_OPEN.lastIndex = ls;
+      return RE_FENCE_OPEN.test(src);
+    case 60:
+      RE_HTML_OPEN.lastIndex = ls;
+      return RE_HTML_OPEN.test(src);
+    case 42:
+    case 43:
+    case 45: {
+      const d = i + 1 < n ? src.charCodeAt(i + 1) : -1;
+      if (d === -1 || d === 32 || d === 9 || d === 10) return true;
+      if (c === 43) return false;
+      RE_HR.lastIndex = ls;
+      return RE_HR.test(src);
+    }
+    case 95:
+      RE_HR.lastIndex = ls;
+      return RE_HR.test(src);
+  }
+  if (c >= 48 && c <= 57) {
+    let j = i + 1;
+    while (j - i < 9 && j < n && src.charCodeAt(j) >= 48 && src.charCodeAt(j) <= 57) j++;
+    const d = j < n ? src.charCodeAt(j) : -1;
+    if (d === 46 || d === 41) {
+      const e = j + 1 < n ? src.charCodeAt(j + 1) : -1;
+      return e === -1 || e === 32 || e === 9 || e === 10;
+    }
+  }
+  return false;
+}
+
+// End of marked's blockquote rule matched at pos (-1 if it does not match): a run of lines that
+// open with up to three spaces and ">"; when the rest of such a line is not blank it starts a
+// paragraph that also takes the lazy lines after it (see bqParaBreak).
+function bqEnd(src, pos) {
+  const n = src.length;
+  let p = pos;
+  while (p < n) {
+    let i = p;
+    while (i < n && i - p < 3 && src.charCodeAt(i) === 32) i++;
+    if (i >= n || src.charCodeAt(i) !== 62) break;
+    i++;
+    if (i < n && src.charCodeAt(i) === 32) i++;
+    let j = i;
+    while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9)) j++;
+    let le = src.indexOf('\n', i);
+    if (le === -1) le = n;
+    if (j < le) {
+      // a paragraph: its first line, then lazy lines up to the first interruption
+      while (le < n) {
+        const ls = le + 1;
+        if (ls >= n || bqParaBreak(src, ls)) break;
+        le = src.indexOf('\n', ls);
+        if (le === -1) le = n;
+      }
+    }
+    p = le < n ? le + 1 : n;
+  }
+  return p === pos ? -1 : p;
+}
+
 function blockquote(src, pos) {
-  RE_BQ.lastIndex = pos;
-  if (!RE_BQ.test(src)) return null;
-  let lines = rtrimChar(src.slice(pos, RE_BQ.lastIndex), '\n').split('\n');
+  const bqStop = bqEnd(src, pos);
+  if (bqStop === -1) return null;
+  let lines = rtrimChar(src.slice(pos, bqStop), '\n').split('\n');
   let raw = '';
   let text = '';
   const toks = [];

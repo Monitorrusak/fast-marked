@@ -72,6 +72,17 @@ function tableSoup() {
   return (rnd() < 0.3 ? pick(['para', '', '# t']) + '\n' : '') + lines.join('\n') + (rnd() < 0.6 ? '\n' : '') + (rnd() < 0.3 ? '\npara after' : '');
 }
 
+
+// a blockquote, then lazy and interrupting lines
+const QUOTE_LINES = ['> a', '>b', '   > c', '    > d', '>', '> ', '>	', 'lazy', '  lazy', '', ' ', '	', '- x', '-', '-	', '* y', '+', '1. z', '1)', '12. w', '1234567890. v', '# h', '#', '---', '***',
+  '___', '```', '~~~', '<div>', '<!--', '<p>', '<x>', '> > n', '>> m', '> - li', '> 1. li', '> ```', '>     code', '> # h', '> ---', 'a b', '=', '> ==', '> --'];
+function quoteSoup() {
+  const lines = [];
+  const n = 1 + int(7);
+  for (let i = 0; i < n; i++) lines.push(i === 0 ? pick(['> a', '>b', '  > c', '> - li']) : pick(QUOTE_LINES));
+  return (rnd() < 0.3 ? pick(['para', '- item', '1. one']) + '\n' : '') + lines.join('\n') + (rnd() < 0.6 ? '\n' : '');
+}
+
 function mutate(s) {
   const ops = 1 + int(4);
   for (let k = 0; k < ops; k++) {
@@ -102,6 +113,7 @@ for (let i = 0; i < count; i++) {
   if (r < 0.25) md = inlineSoup(1 + int(25));
   else if (r < 0.4) md = blockSoup();
   else if (r < 0.55) md = tableSoup();
+  else if (r < 0.65) md = quoteSoup();
   else if (r < 0.8 || docs.length === 0) md = mutate(pick(examples));
   else md = docSlice();
   let want, got;
