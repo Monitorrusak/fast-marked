@@ -49,9 +49,7 @@ const LH_TAIL = R`| {0,3}<[^\n>]+>\n| {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n`;
 const RE_LHEADING = new RegExp(
   R`^(?!${LH_BULL} |(?: {4}| {0,3}\t)${LH_STOPS}${LH_TAIL})((?:.|\n(?!\s*?\n|${LH_BULL} ${LH_STOPS}|${HR_NC_SRC}${LH_TAIL}))+?)\n {0,3}(=+|-+)[ \t]*(?:\n+|$)`,
 );
-// (paragraphs are delimited by paragraphLength / RE_PARA_STOP below)
-const BQ_PARA = R`([^\n]+(?:\n(?!${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_BQ}|${I_HTML}|[ \t]+\n)[^\n]+)*)`;
-const RE_BLOCKQUOTE = new RegExp(R`^( {0,3}> ?(?:(?![ \t]*(?:\n|$))(${BQ_PARA})|[^\n]*)(?:\n|$))+`);
+// (paragraphs and block quotes are delimited by paragraphLength / blockquoteLength below)
 
 // list item helpers, one variant per indentation 0..3 (marked caps the indent there)
 const LIST_ITEM = {};
@@ -99,10 +97,6 @@ const RE_AUTOLINK = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s\x00-\x1f<>]*|[a-zA-Z0-
 const RE_BR = /^( {2,}|\\)\n(?!\s*$)[ \t]*/;
 const RE_CODESPAN = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/;
 const RE_DEL_L = new RegExp(R`^~~?(?:((?!~)${P0})|[^\s~])`, 'u');
-const RE_DEL_R = new RegExp(
-  R`^[^~]+(?=[^~])|(?!~)${P0}(~~?)(?=[\s]|$)|${NPS0}(~~?)(?!~)(?=${PS0}|$)|(?!~)${PS0}(~~?)(?=${NPS0})|[\s](~~?)(?!~)(?=${P0})|(?!~)${P0}(~~?)(?!~)(?=${P0})|${NPS0}(~~?)(?=${NPS0})`,
-  'gu',
-);
 // (the emphasis right-delimiter rules, RE_EM_R_AST / RE_EM_R_UND in marked, are implemented
 // by emStrong's run scanner and flankGroup below)
 const RE_PUNCTUATION = new RegExp(R`^((?![*_])${PS0})`, 'u');
@@ -424,25 +418,39 @@ function setextUnderlineAhead(src, nl) {
   return false;
 }
 
-/** Everything that can interrupt a paragraph, tried at the start of its next line. */
-const RE_PARA_STOP = new RegExp(
-  `(?:${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_PARA}|${I_HTML}|${TABLE_SRC}|[ \\t]+\\n)`,
-  'y',
-);
-/** Could a paragraph interrupter start at line start ls? (cheap and conservative) */
-function mayInterrupt(src, ls) {
+// What can interrupt a paragraph, tried at the start of its next line. The table rule (a header
+// line followed by a delimiter row) is kept apart: it is costly and needs a delimiter row next.
+const RE_PARA_STOP = new RegExp(`(?:${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_PARA}|${I_HTML}|[ \\t]+\\n)`, 'y');
+const Y_TABLE = new RegExp(TABLE_SRC, 'y');
+// The same for a paragraph inside a block quote (its list rule differs, and tables do not count).
+const RE_BQ_STOP = new RegExp(`(?:${HR_SRC}|${I_HEADING}|${I_BQ}|${I_FENCE}|${I_LIST_BQ}|${I_HTML}|[ \\t]+\\n)`, 'y');
+
+/** Can one of those interrupters start at line start ls? 0: no, 2: certainly (a quote marker,
+ * or a bullet as the list rule needs it), 1: maybe, so the regex decides. Every interrupter
+ * needs one of the characters below after the line's spaces, or a whitespace-only line. */
+function interruptKind(src, ls, inQuote) {
   let j = ls;
+  while (src.charCodeAt(j) === 32) j++;
   let ch = src.charCodeAt(j);
+  if (j - ls <= 3) {
+    if (ch === 62) return 2; // ` {0,3}>`
+    if (ch === 42 || ch === 43 || ch === 45) {
+      const d = src.charCodeAt(j + 1);
+      if (inQuote) {
+        if (d === 32 || d === 9 || d === 10 || j + 1 >= src.length) return 2; // [*+-](?:[ \t]|\n|$)
+      } else if (d === 32 || d === 9) {
+        let k = j + 2;
+        while (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9) k++;
+        if (k < src.length && src.charCodeAt(k) !== 10) return 2; // [*+-][ \t]+[^ \t\n]
+      }
+    }
+  }
   while (ch === 32 || ch === 9) ch = src.charCodeAt(++j);
   switch (ch) {
     case 10: case 45: case 95: case 42: case 35: case 62: case 96: case 126: case 43: case 60:
-      return true;
+      return 1;
   }
-  if (ch >= 48 && ch <= 57) return true;
-  if (j >= src.length) return true;
-  // a table header line: the line after it is a delimiter row
-  const nl = src.indexOf('\n', j);
-  return nl !== -1 && delimiterRowStart(src, nl + 1);
+  return ch >= 48 && ch <= 57 ? 1 : 0;
 }
 /** Length of the paragraph at the start of src (src does not start with a newline). */
 function paragraphLength(src, end) {
@@ -451,14 +459,57 @@ function paragraphLength(src, end) {
   for (;;) {
     const ls = end + 1;
     if (ls >= n || src.charCodeAt(ls) === 10) return end;
-    if (mayInterrupt(src, ls)) {
+    const kind = interruptKind(src, ls, false);
+    if (kind === 2) return end;
+    if (kind === 1) {
       RE_PARA_STOP.lastIndex = ls;
       if (RE_PARA_STOP.test(src)) return end;
     }
     const nx = src.indexOf('\n', ls);
+    if (nx !== -1 && delimiterRowStart(src, nx + 1)) {
+      Y_TABLE.lastIndex = ls;
+      if (Y_TABLE.test(src)) return end;
+    }
     if (nx === -1) return n;
     end = nx;
   }
+}
+
+/** Length of RE_BLOCKQUOTE's match at the start of src (0 when it does not match): lines that
+ * start with ` {0,3}>`, each followed, when not blank, by the lazy continuation lines of its
+ * paragraph. */
+function blockquoteLength(src) {
+  const n = src.length;
+  let pos = 0;
+  for (;;) {
+    let j = pos;
+    while (j < pos + 3 && src.charCodeAt(j) === 32) j++;
+    if (src.charCodeAt(j) !== 62) break;
+    j++;
+    if (src.charCodeAt(j) === 32) j++;
+    let e = src.indexOf('\n', j);
+    if (e === -1) e = n;
+    let k = j;
+    while (k < e && (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9)) k++;
+    if (k < e) {
+      // a paragraph: it runs on over following lines until an empty line or an interrupter
+      while (e < n) {
+        const ls = e + 1;
+        if (ls >= n || src.charCodeAt(ls) === 10) break;
+        const kind = interruptKind(src, ls, true);
+        if (kind === 2) break;
+        if (kind === 1) {
+          RE_BQ_STOP.lastIndex = ls;
+          if (RE_BQ_STOP.test(src)) break;
+        }
+        const nx = src.indexOf('\n', ls);
+        e = nx === -1 ? n : nx;
+      }
+    }
+    if (e >= n) return n;
+    pos = e + 1;
+  }
+  return pos;
 }
 
 function indentCompensation(raw, text) {
@@ -481,9 +532,9 @@ const RE_BQ_SETEXT = /\n {0,3}((?:=+|-+)[ \t]*)(?=\n|$)/g;
 const RE_BQ_STRIP = /^ {0,3}>[ \t]?/gm;
 
 function blockquote(src) {
-  const m = RE_BLOCKQUOTE.exec(src);
-  if (!m) return;
-  let lines = rtrimChar(m[0], '\n').split('\n');
+  const len = blockquoteLength(src);
+  if (len === 0) return;
+  let lines = rtrimChar(src.slice(0, len), '\n').split('\n');
   let raw = '';
   let text = '';
   const tokens = [];
@@ -551,26 +602,33 @@ const RE_TASK_STRIP = /^\[[ xX]\][ \t]+/;
 const RE_TASK_BOX = /\[[ xX]\]/;
 const RE_SETEXT_LINE = /^ {0,3}(?:=+|-+) *$/;
 
-/** Could a list-item break rule (fence, heading, html, quote, bullet, hr) match `line`
- * with at most `k` leading spaces? Every one of them needs one of these characters next. */
-function mayStartBlock(line, k) {
+/** Does a list-item break rule (fence, heading, html, quote, next bullet, hr) match `line`?
+ * Each needs at most k spaces and then one particular character, so only the rules that
+ * character can start are tried. */
+function itemBreak(line, k) {
   let i = 0;
   while (i <= k && line.charCodeAt(i) === 32) i++;
-  switch (line.charCodeAt(i)) {
+  if (i > k) return false; // more than k spaces: no rule can match
+  const c = line.charCodeAt(i);
+  switch (c) {
     case 96: // `
     case 126: // ~
+      return FENCE_AT[k].test(line);
     case 35: // #
+      return HEADING_AT[k].test(line);
     case 60: // <
-    case 62: // >
-    case 42: // *
-    case 43: // +
-    case 45: // -
-    case 95: // _
+      return HTML_AT[k].test(line);
+    case 62: // > (BQ_AT[k] is just ` {0,k}>`)
       return true;
-    default: {
-      const c = line.charCodeAt(i);
-      return c >= 48 && c <= 57;
-    }
+    case 42: // *
+    case 45: // -
+      return NEXT_BULLET[k].test(line) || HR_AT[k].test(line);
+    case 43: // +
+      return NEXT_BULLET[k].test(line);
+    case 95: // _
+      return HR_AT[k].test(line);
+    default:
+      return c >= 48 && c <= 57 && NEXT_BULLET[k].test(line);
   }
 }
 
@@ -660,12 +718,12 @@ function list(src) {
     }
     if (!blankFound) {
       const k = indexFor(indent);
-      const reBullet = NEXT_BULLET[k], reHr = HR_AT[k], reFence = FENCE_AT[k], reHeading = HEADING_AT[k], reHtml = HTML_AT[k], reBq = BQ_AT[k];
+      const reHr = HR_AT[k], reFence = FENCE_AT[k], reHeading = HEADING_AT[k], reHtml = HTML_AT[k];
       while (pos < n) {
         nl = src.indexOf('\n', pos);
         next = nl === -1 ? src.slice(pos) : src.slice(pos, nl);
         // every break rule is "at most k spaces, then one of these characters"
-        if (mayStartBlock(next, k) && (reFence.test(next) || reHeading.test(next) || reHtml.test(next) || reBq.test(next) || reBullet.test(next) || reHr.test(next))) break;
+        if (itemBreak(next, k)) break;
         const expanded = expandLeadingTabs(next, 0);
         const nextBlank = isBlank(next);
         const rest = expanded.slice(indent);
@@ -1424,11 +1482,13 @@ function cpClass(s, i, len) {
 }
 
 /**
- * Which capturing alternative of RE_EM_R_AST (ast) or RE_EM_R_UND matches the delimiter run
+ * Which capturing alternative of marked's right-delimiter rule matches the delimiter run
  * s[a, b) together with the code point at bi (bl units long) just before it: 1 to 6, or 0.
- * For '*' a tilde counts as an ordinary character rather than punctuation.
+ * mode 0: RE_EM_R_UND ('_'), 1: RE_EM_R_AST ('*': a tilde counts as an ordinary character
+ * rather than punctuation), 2: RE_DEL_R ('~'). Only modes 1 and 2 have a sixth alternative.
  */
-function flankGroup(s, bi, bl, b, ast) {
+function flankGroup(s, bi, bl, b, mode) {
+  const ast = mode === 1;
   let cb = cpClass(s, bi, bl);
   const eos = b >= s.length;
   let ca = -1;
@@ -1451,7 +1511,7 @@ function flankGroup(s, bi, bl, b, ast) {
   if (cb !== 0 && ca === 0) return 3;
   if (cb === 1 && ca === 2) return 4;
   if (cb === 2 && ca === 2) return 5;
-  if (ast && cb === 0 && ca === 0) return 6;
+  if (mode !== 0 && cb === 0 && ca === 0) return 6;
   return 0;
 }
 
@@ -1525,7 +1585,7 @@ function emStrong(s, pos, ctx, prevChar, textMode, features) {
       if (h >= 0xd800 && h <= 0xdbff) bl = 2;
     }
     if (a - bl - startIn > limit) break;
-    const group = flankGroup(masked, a - bl, bl, b, ast);
+    const group = flankGroup(masked, a - bl, bl, b, ast ? 1 : 0);
     if (group === 0) continue;
     let rLength = b - a;
     if (group === 3 || group === 4) {
@@ -1565,22 +1625,38 @@ function strike(s, pos, ctx, prevChar, textMode, features) {
   const closer = lastCloser(ctx, '~');
   const startIn = pos + lLength;
   if (closer < startIn) return null;
-  const rest = masked.slice(startIn);
   const limit = closer - startIn;
-  RE_DEL_R.lastIndex = 0;
-  while ((m = RE_DEL_R.exec(rest)) !== null && !(m.index > limit)) {
-    const rDelim = m[1] || m[2] || m[3] || m[4] || m[5] || m[6];
-    if (!rDelim) continue;
-    let rLength = rDelim.length;
+  // RE_DEL_R as a run scanner (see emStrong): its alternatives capture a run of one or two
+  // tildes, always whole, and never a longer run.
+  const n = masked.length;
+  let from = startIn;
+  for (;;) {
+    const a = masked.indexOf('~', from);
+    if (a === -1) break;
+    let b = a + 1;
+    while (b < n && masked.charCodeAt(b) === 126) b++;
+    from = b;
+    if (a === startIn) continue;
+    let bl = 1;
+    const bc = masked.charCodeAt(a - 1);
+    if (bc >= 0xdc00 && bc <= 0xdfff && a - 2 >= startIn) {
+      const h = masked.charCodeAt(a - 2);
+      if (h >= 0xd800 && h <= 0xdbff) bl = 2;
+    }
+    if (a - bl - startIn > limit) break;
+    if (b - a > 2) continue;
+    const group = flankGroup(masked, a - bl, bl, b, 2);
+    if (group === 0) continue;
+    let rLength = b - a;
     if (rLength !== lLength) continue;
-    if (m[3] || m[4]) {
+    if (group === 3 || group === 4) {
       delimTotal += rLength;
       continue;
     }
     delimTotal -= rLength;
     if (delimTotal > 0) continue;
     rLength = Math.min(rLength, rLength + delimTotal);
-    const end = pos + lLength + m.index + firstCodePointLength(m[0]) + rLength;
+    const end = a + rLength;
     const inner = lexInline(s.slice(pos + lLength, end - lLength), textMode, features);
     lastEnd = end;
     return textMode ? inner : '<del>' + inner + '</del>';
