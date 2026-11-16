@@ -102,7 +102,6 @@ let top = true;
 let inLink = false;
 let inRawBlock = false;
 let linkEmitted = false;
-let lpp = true; // marked's linkParenPossible
 
 const T_SPACE = 1, T_CODE = 2, T_HEADING = 3, T_HR = 4, T_BQ = 5, T_LIST = 6, T_HTML = 7, T_DEF = 8,
   T_TABLE = 9, T_PARA = 10, T_TEXT = 11, T_CHECKBOX = 12;
@@ -116,7 +115,6 @@ export function parse(markdown) {
   inLink = false;
   inRawBlock = false;
   linkEmitted = false;
-  lpp = true;
   const tokens = blockTokens(src, [], false);
   for (let i = 0; i < queue.length; i++) {
     const q = queue[i];
@@ -1138,22 +1136,174 @@ function maskSrc(src) {
   const lt = src.indexOf('<') !== -1;
   let t = src;
   if (br && defCount > 0) t = t.replace(RE_REFSEARCH, refMask);
-  // native regex passes beat hand-written scanners here: a single cold run never warms JS loops up
-  if (tick || bs) t = t.replace(RE_CODE_OR_ESCAPE, maskCodeOrEscape);
-  if (br || tick || lt) t = t.replace(RE_BLOCKSKIP, maskSkip);
+  if (tick || bs) t = maskCodeEscapes(t);
+  if (br || tick || lt) t = maskSkips(t);
   return t;
 }
 
-// inside a code span every inner backtick becomes "+"; an escaped punctuation character becomes "+"s
-const RE_CODE_OR_ESCAPE = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
-function maskCodeOrEscape(all, ticks, punct) {
-  if (punct) return '+'.repeat(all.length);
-  if (ticks) return ticks + all.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks;
-  return all;
+// Pass 2, marked's anyPunctuationOutsideCode replace done as a scan: inside a code span each inner
+// backtick becomes "+"; outside code spans a backslash and the punctuation it escapes become "+"s.
+function maskCodeEscapes(t) {
+  const n = t.length;
+  let out = '';
+  let last = 0;
+  let i = 0;
+  let nTick = -1;
+  let nBs = -1;
+  while (i < n) {
+    const c = t.charCodeAt(i);
+    if (c === 96) {
+      let e = i + 1;
+      while (e < n && t.charCodeAt(e) === 96) e++;
+      const L = e - i;
+      // the span closes at the next run of exactly L backticks (it cannot be empty)
+      let close = -1;
+      for (let j = e; j < n; ) {
+        j = t.indexOf('`', j);
+        if (j === -1) break;
+        let k = j + 1;
+        while (k < n && t.charCodeAt(k) === 96) k++;
+        if (k - j === L) {
+          close = j;
+          break;
+        }
+        j = k;
+      }
+      if (close === -1) {
+        i = e;
+        continue;
+      }
+      if (t.indexOf('`', e) < close) {
+        out += t.slice(last, e) + t.slice(e, close).replace(/`/g, '+');
+        last = close;
+      }
+      i = close + L;
+      continue;
+    }
+    if (c === 92) {
+      const cp = cpAt(t, i + 1);
+      if (cp >= 0 && kindOf(cp) === K_PUNCT) {
+        const len = cp > 0xffff ? 3 : 2;
+        out += t.slice(last, i) + (len === 2 ? '++' : '+++');
+        last = i + len;
+        i += len;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (nTick < i) nTick = t.indexOf('`', i);
+    if (nTick === -1) nTick = n;
+    if (nBs < i) nBs = t.indexOf('\\', i);
+    if (nBs === -1) nBs = n;
+    i = nTick < nBs ? nTick : nBs;
+  }
+  return last === 0 ? t : out + t.slice(last);
 }
-// link spans, code spans and <...> spans become "[aaa]" of the same length
-function maskSkip(all) {
-  return '[' + 'a'.repeat(all.length - 2) + ']';
+
+// end of a blockSkip link destination "(...)" body starting at j (just after "]("), or -1:
+// escapes, characters other than parentheses, and one level of balanced parentheses, then ")"
+function skipDestEnd(t, j) {
+  const n = t.length;
+  while (j < n) {
+    const c = t.charCodeAt(j);
+    if (c === 41) return j + 1;
+    if (c === 92) {
+      if (j + 1 >= n) return -1;
+      j += 2;
+    } else if (c === 40) {
+      let k = j + 1;
+      for (;;) {
+        if (k >= n) return -1;
+        const d = t.charCodeAt(k);
+        if (d === 41) break;
+        if (d === 40) return -1;
+        k += d === 92 ? 2 : 1;
+      }
+      j = k + 1;
+    } else j++;
+  }
+  return -1;
+}
+
+// blockSkip's link alternative at i: "[" (no brackets; code spans allowed) "](" destination ")"
+function skipLinkEnd(t, i) {
+  const n = t.length;
+  let j = i + 1;
+  while (j < n) {
+    const c = t.charCodeAt(j);
+    if (c === 93) return t.charCodeAt(j + 1) === 40 ? skipDestEnd(t, j + 2) : -1;
+    if (c === 91) return -1;
+    if (c === 96) {
+      let e = j + 1;
+      while (e < n && t.charCodeAt(e) === 96) e++;
+      const k = e < n ? t.indexOf('`', e) : -1;
+      if (k <= e) return -1;
+      let k2 = k + 1;
+      while (k2 < n && t.charCodeAt(k2) === 96) k2++;
+      if (k2 - k !== e - j) return -1;
+      j = k2;
+    } else j++;
+  }
+  return -1;
+}
+
+// Pass 3, marked's blockSkip replace done as a scan: link spans, code spans and <...> spans become
+// "[aaa]" of the same length.
+function maskSkips(t) {
+  const n = t.length;
+  let out = '';
+  let last = 0;
+  let i = 0;
+  let nBr = -1;
+  let nTick = -1;
+  let nLt = -1;
+  while (i < n) {
+    const c = t.charCodeAt(i);
+    let end = -1;
+    if (c === 91) end = skipLinkEnd(t, i);
+    else if (c === 96) {
+      // (?<!`)(`+)[^`]+\1(?!`)
+      if (i === 0 || t.charCodeAt(i - 1) !== 96) {
+        let e = i + 1;
+        while (e < n && t.charCodeAt(e) === 96) e++;
+        const k = e < n ? t.indexOf('`', e) : -1;
+        if (k > e) {
+          let k2 = k + 1;
+          while (k2 < n && t.charCodeAt(k2) === 96) k2++;
+          if (k2 - k === e - i) end = k2;
+        }
+      }
+    } else if (c === 60) {
+      // <(?! )[^<>]*?>
+      if (i + 1 < n && t.charCodeAt(i + 1) !== 32) {
+        let j = i + 1;
+        while (j < n) {
+          const d = t.charCodeAt(j);
+          if (d === 62 || d === 60) break;
+          j++;
+        }
+        if (j < n && t.charCodeAt(j) === 62) end = j + 1;
+      }
+    } else {
+      if (nBr < i) nBr = t.indexOf('[', i);
+      if (nBr === -1) nBr = n;
+      if (nTick < i) nTick = t.indexOf('`', i);
+      if (nTick === -1) nTick = n;
+      if (nLt < i) nLt = t.indexOf('<', i);
+      if (nLt === -1) nLt = n;
+      i = nBr < nTick ? (nBr < nLt ? nBr : nLt) : nTick < nLt ? nTick : nLt;
+      continue;
+    }
+    if (end === -1) {
+      i++;
+      continue;
+    }
+    out += t.slice(last, i) + '[' + 'a'.repeat(end - i - 2) + ']';
+    last = end;
+    i = end;
+  }
+  return last === 0 ? t : out + t.slice(last);
 }
 
 function refMask(r) {
@@ -1240,8 +1390,7 @@ function autolinkHtml(text, href, plain) {
 }
 
 function inline(src, plain) {
-  const outerLpp = lpp;
-  lpp = outerLpp && src.indexOf(')') !== -1;
+  let paren = -1; // marked's linkParenPossible: whether this text has a ")" (-1: not checked yet)
   const len = src.length;
   let out = '';
   // The current text run: consecutive text tokens, which are contiguous in src. Undecoded text is
@@ -1305,7 +1454,8 @@ function inline(src, plain) {
       case 33:
       case 91: {
         if (c === 33 && src.charCodeAt(pos + 1) !== 91) break;
-        if (lpp) {
+        if (paren === -1) paren = src.indexOf(')') === -1 ? 0 : 1;
+        if (paren === 1) {
           html = tryLink(src, pos, plain);
           if (html !== null) {
             end = gEnd;
@@ -1417,7 +1567,6 @@ function inline(src, plain) {
     const run = runBuf + src.slice(runStart, pos);
     out += runEscape && !plain ? escapeHtml(run) : run;
   }
-  lpp = outerLpp;
   return out;
 }
 
