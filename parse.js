@@ -1044,8 +1044,6 @@ function cellHtml(tag, align, html) {
 // ---------------------------------------------------------------------------------------------
 // Escaping
 
-const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-const escChar = (c) => ESC_MAP[c];
 
 /** marked's escape(s, true): every & < > " ' */
 function escapeAll(s) {
@@ -1348,7 +1346,8 @@ function maskSrc(src) {
   let t = src;
   if (br && defCount > 0 && definedBracket(t)) t = t.replace(RE_REFSEARCH, refMask);
   if (tick || bs) t = maskCodeEscapes(t);
-  if (br || tick || lt) t = maskSkips(t);
+  // (a link span needs "](")
+  if (tick || lt || (br && t.indexOf('](') !== -1)) t = maskSkips(t);
   return t;
 }
 
@@ -1523,7 +1522,14 @@ function maskSkips(t) {
 function definedBracket(t) {
   for (let j = t.indexOf(']'); j !== -1; j = t.indexOf(']', j + 1)) {
     const i = t.lastIndexOf('[', j);
-    if (i !== -1 && normLabel(t.slice(i + 1, j)) in links) return true;
+    if (i === -1) continue;
+    // "...](": a match of the short form cannot end here (it refuses a following "("); the full
+    // form "[text][label]" has a "]" right before its last "[" (or a "\" when that "[" is escaped)
+    if (j + 1 < t.length && t.charCodeAt(j + 1) === 40) {
+      const b = i > 0 ? t.charCodeAt(i - 1) : -1;
+      if (b !== 93 && b !== 92) continue;
+    }
+    if (normLabel(t.slice(i + 1, j)) in links) return true;
   }
   return false;
 }
