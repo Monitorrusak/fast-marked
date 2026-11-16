@@ -430,11 +430,17 @@ function blockTokens(src, out, mergePara) {
 function underlineBefore(src, from, limit) {
   let j = src.indexOf('\n', from);
   while (j !== -1 && j < limit) {
+    // the underline " {0,3}(=+|-+)[ \t]*" filling the whole line
+    const n = src.length;
     let k = j + 1;
     const lim = k + 3;
-    while (k < lim && (k < src.length ? src.charCodeAt(k) : -1) === 32) k++;
-    const c = (k < src.length ? src.charCodeAt(k) : -1);
-    if (c === 61 || c === 45) return j;
+    while (k < lim && k < n && src.charCodeAt(k) === 32) k++;
+    const c = k < n ? src.charCodeAt(k) : -1;
+    if (c === 61 || c === 45) {
+      while (k < n && src.charCodeAt(k) === c) k++;
+      while (k < n && (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9)) k++;
+      if (k >= n || src.charCodeAt(k) === 10) return j;
+    }
     j = src.indexOf('\n', j + 1);
   }
   return limit;
