@@ -272,17 +272,22 @@ function blockTokens(src, out, mergePara) {
       }
       if (c === 35) {
         RE_HEADING.lastIndex = pos;
-        m = RE_HEADING.exec(src);
-        if (m !== null) {
-          let text = m[2].trim();
+        if (RE_HEADING.test(src)) {
+          // the match is the "#" run at i (at most six, then blank or end), the rest of the line
+          // (it cannot hold a line separator, or the match fails) and the newlines after it
+          let h = i;
+          while (h < len && src.charCodeAt(h) === 35) h++;
+          let le = src.indexOf('\n', h);
+          if (le === -1) le = len;
+          let text = src.slice(h, le).trim();
           if (text.endsWith('#')) {
             const s = rtrimChar(text, '#');
             if (!s || /[ \t]$/.test(s)) text = s.trim();
           }
-          const raw = rtrimChar(m[0], '\n');
+          const raw = src.slice(pos, le);
           pos += raw.length;
           const b = new Block(T_HEADING, raw);
-          b.depth = m[1].length;
+          b.depth = h - i;
           b.q = newQ(text);
           out.push(b);
           continue;
@@ -542,9 +547,8 @@ function fenceIndent(raw, text) {
 
 function blockquote(src, pos) {
   RE_BQ.lastIndex = pos;
-  const mm = RE_BQ.exec(src);
-  if (mm === null) return null;
-  let lines = rtrimChar(mm[0], '\n').split('\n');
+  if (!RE_BQ.test(src)) return null;
+  let lines = rtrimChar(src.slice(pos, RE_BQ.lastIndex), '\n').split('\n');
   let raw = '';
   let text = '';
   const toks = [];
@@ -766,12 +770,26 @@ function itemBreakAt(src, e, f, fc, le, ci) {
   return false;
 }
 
+// Start and end of the list marker of a line at p that the list regexes matched: up to three
+// spaces, then "*", "+", "-" or up to nine digits and "." or ")".
+function markerStart(src, p) {
+  while (src.charCodeAt(p) === 32) p++;
+  return p;
+}
+function markerEnd(src, p) {
+  p = markerStart(src, p);
+  const c = src.charCodeAt(p);
+  if (c < 48 || c > 57) return p + 1;
+  p++;
+  while (src.charCodeAt(p) >= 48 && src.charCodeAt(p) <= 57) p++;
+  return p + 1;
+}
+
 function list(src, pos) {
   RE_LIST.lastIndex = pos;
-  let t = RE_LIST.exec(src);
-  if (t === null) return null;
+  if (!RE_LIST.test(src)) return null;
   const len = src.length;
-  const bull = t[1].trim();
+  const bull = src.slice(markerStart(src, pos), markerEnd(src, pos));
   const ordered = bull.length > 1;
   const lst = new Block(T_LIST, '');
   lst.ordered = ordered;
@@ -784,13 +802,15 @@ function list(src, pos) {
     let blankEnd = false;
     let itemText = '';
     itemRe.lastIndex = e;
-    if ((t = itemRe.exec(src)) === null) break;
+    if (!itemRe.test(src)) break;
+    const itemEnd = itemRe.lastIndex;
     RE_HR.lastIndex = e;
     if (RE_HR.test(src)) break;
     const k = e;
-    e += t[0].length;
-    const t2 = t[2];
-    const b = t[1].length;
+    // marked's t[1] (indent and marker) and t[2] (the rest of the line, with its newline)
+    const b = markerEnd(src, e) - e;
+    const t2 = src.slice(e + b, itemEnd);
+    e = itemEnd;
     let line = expandLead(t2.length > 0 && t2.charCodeAt(t2.length - 1) === 10 ? t2.slice(0, -1) : t2, b);
     let le = src.indexOf('\n', e);
     if (le === -1) le = len;
@@ -1648,10 +1668,11 @@ function inline(src, plain) {
           break;
         }
         RE_AUTOLINK.lastIndex = pos;
-        const m = RE_AUTOLINK.exec(src);
-        if (m !== null) {
-          end = pos + m[0].length;
-          html = autolinkHtml(m[1], m[2] === '@' ? 'mailto:' + m[1] : m[1], plain);
+        if (RE_AUTOLINK.test(src)) {
+          end = RE_AUTOLINK.lastIndex;
+          // <scheme:...> always holds a ":", which the email form cannot
+          const inner = src.slice(pos + 1, end - 1);
+          html = autolinkHtml(inner, inner.indexOf(':') === -1 ? 'mailto:' + inner : inner, plain);
         }
         break;
       }
@@ -1701,11 +1722,14 @@ function inline(src, plain) {
       }
       case 96: {
         RE_CODESPAN.lastIndex = pos;
-        const m = RE_CODESPAN.exec(src);
-        if (m !== null) {
-          let t = m[2].indexOf('\n') === -1 ? m[2] : m[2].replace(/\n/g, ' ');
+        if (RE_CODESPAN.test(src)) {
+          // the closing run is as long as the opening one, which starts at pos
+          let ticks = 1;
+          while (src.charCodeAt(pos + ticks) === 96) ticks++;
+          end = RE_CODESPAN.lastIndex;
+          const inner = src.slice(pos + ticks, end - ticks);
+          let t = inner.indexOf('\n') === -1 ? inner : inner.replace(/\n/g, ' ');
           if (/[^ ]/.test(t) && t[0] === ' ' && t[t.length - 1] === ' ') t = t.substring(1, t.length - 1);
-          end = pos + m[0].length;
           html = plain ? t : '<code>' + escapeAll(t) + '</code>';
         }
         break;
