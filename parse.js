@@ -1316,7 +1316,7 @@ function maskSrc(src) {
   const bs = src.indexOf('\\') !== -1;
   const lt = src.indexOf('<') !== -1;
   let t = src;
-  if (br && defCount > 0) t = t.replace(RE_REFSEARCH, refMask);
+  if (br && defCount > 0 && definedBracket(t)) t = t.replace(RE_REFSEARCH, refMask);
   if (tick || bs) t = maskCodeEscapes(t);
   if (br || tick || lt) t = maskSkips(t);
   return t;
@@ -1485,6 +1485,17 @@ function maskSkips(t) {
     i = end;
   }
   return last === 0 ? t : out + t.slice(last);
+}
+
+// refMask changes a match only when the text between its last "[" and its final "]" is a defined
+// label. Every match ends at some "]" of t, and its last "[" is the last "[" of t before that "]",
+// so when no "]" of t has a defined label in front of it, the reference pass changes nothing.
+function definedBracket(t) {
+  for (let j = t.indexOf(']'); j !== -1; j = t.indexOf(']', j + 1)) {
+    const i = t.lastIndexOf('[', j);
+    if (i !== -1 && normLabel(t.slice(i + 1, j)) in links) return true;
+  }
+  return false;
 }
 
 function refMask(r) {
