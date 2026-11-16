@@ -231,8 +231,11 @@ function blockTokens(src, out, mergePara) {
         const raw = src.slice(pos, RE_NEWLINE.lastIndex);
         pos += raw.length;
         const last = out[out.length - 1];
-        if (raw.length === 1 && last !== undefined) last.raw += '\n';
-        else out.push(new Block(T_SPACE, raw));
+        // a lone newline joins the previous token's raw; only lists, blockquotes and blank-line
+        // tokens have their raw read again (blockquote continuation, list looseness)
+        if (raw.length === 1 && last !== undefined) {
+          if (last.type === T_LIST || last.type === T_BQ || last.type === T_SPACE) last.raw += '\n';
+        } else out.push(new Block(T_SPACE, raw));
         continue;
       }
     }
@@ -245,7 +248,6 @@ function blockTokens(src, out, mergePara) {
         pos += raw.length;
         const last = out[out.length - 1];
         if (last !== undefined && (last.type === T_PARA || last.type === T_TEXT)) {
-          last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
           last.q.src += '\n' + text;
         } else {
           const b = new Block(T_CODE, raw);
@@ -337,7 +339,6 @@ function blockTokens(src, out, mergePara) {
           pos += raw.length;
           const last = out[out.length - 1];
           if (last !== undefined && (last.type === T_PARA || last.type === T_TEXT)) {
-            last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
             last.q.src += '\n' + raw;
           } else {
             const tag = normLabel(m[1]);
@@ -398,7 +399,6 @@ function blockTokens(src, out, mergePara) {
       const raw = src.slice(pos, paraEnd(src, pos));
       const last = out[out.length - 1];
       if (mergePara && last !== undefined && last.type === T_PARA) {
-        last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
         last.q.src += '\n' + raw;
       } else {
         const b = new Block(T_PARA, raw);
@@ -418,7 +418,6 @@ function blockTokens(src, out, mergePara) {
       pos = e;
       const last = out[out.length - 1];
       if (last !== undefined && last.type === T_TEXT) {
-        last.raw += (last.raw.endsWith('\n') ? '' : '\n') + raw;
         last.q.src += '\n' + raw;
       } else {
         const b = new Block(T_TEXT, raw);
@@ -1333,6 +1332,12 @@ function lastCodePoint(s, l) {
   return s[l - 1];
 }
 
+// n characters of the "a" filler masked spans get (a slice of one string when short enough)
+const A_FILL = 'a'.repeat(4096);
+function fill(n) {
+  return n <= 4096 ? A_FILL.slice(0, n) : 'a'.repeat(n);
+}
+
 /** marked's emStrongMask: hide what emphasis must not see (link text, code, tags, escapes). */
 function maskSrc(src) {
   // every masking pass needs one of these characters; without them it leaves the text unchanged
@@ -1505,7 +1510,7 @@ function maskSkips(t) {
       i++;
       continue;
     }
-    out += t.slice(last, i) + '[' + 'a'.repeat(end - i - 2) + ']';
+    out += t.slice(last, i) + '[' + fill(end - i - 2) + ']';
     last = end;
     i = end;
   }
@@ -1528,9 +1533,9 @@ function refMask(r) {
   if (!(normLabel(r.slice(o + 1, -1)) in links)) return r;
   if (o > 1 && r[0] !== '!') {
     const inner = r.slice(1, o - 1);
-    if (linkInText(inner)) return '[' + inner.replace(RE_REFSEARCH, refMask) + '][' + 'a'.repeat(r.length - o - 2) + ']';
+    if (linkInText(inner)) return '[' + inner.replace(RE_REFSEARCH, refMask) + '][' + fill(r.length - o - 2) + ']';
   }
-  return '[' + 'a'.repeat(r.length - 2) + ']';
+  return '[' + fill(r.length - 2) + ']';
 }
 
 function linkInText(e) {
