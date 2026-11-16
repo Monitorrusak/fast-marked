@@ -23,7 +23,11 @@ How it gets there:
   characters on either side of it (the same decision marked's closer regexes make), on the same
   masked text marked uses;
 - V8 is kept on its optimized code: reads never run off the end of a string, block tokens share
-  one shape, and `main.ts` runs without TurboFan (Maglev stays the optimizing tier) and streams
+  one shape, and matching uses `test()` with `lastIndex` wherever a match array is not needed;
+- the largest composite regexes of marked (table bodies, blockquote extents, the HTML block
+  opener's tag list) are replaced by line scanners, which also saves compiling them;
+- `main.ts` runs without TurboFan (Maglev stays the optimizing tier), compiles regular
+  expressions straight to native code, grows the young generation faster, and streams
   `html.json` out as it goes.
 
 `parse.js` is the module, `main.ts` the program the bounty harness runs (it reads
@@ -38,7 +42,8 @@ override the two directories). `tools/` holds the test and benchmark scripts:
 
 Checked identical to marked on the practice set, on 40 more instances drawn from other seeds
 (1,600 generated READMEs plus the 680 spec examples each time) and on over a million fuzz inputs.
-On the practice set it uses about 2.2x less CPU than marked, net of Node's start-up.
+On the practice set it uses about 2.5x less CPU than marked, net of Node's start-up (process CPU,
+medians of 31 interleaved runs on Node 26; the grader runs Node 22).
 
 ## Run it
 
