@@ -98,6 +98,7 @@ const RE_ALNUM_U = /[\p{L}\p{N}]/u;
 // Per-parse state (reset at the start of every parse call; nothing survives between calls)
 
 let links = null; // label -> {href, title}
+let defCount = 0;
 let queue = null; // blocks whose inline text is rendered after the block pass, in creation order
 let top = true;
 let inLink = false;
@@ -111,6 +112,7 @@ const T_SPACE = 1, T_CODE = 2, T_HEADING = 3, T_HR = 4, T_BQ = 5, T_LIST = 6, T_
 export function parse(markdown) {
   const src = markdown.indexOf('\r') === -1 ? markdown : markdown.replace(/\r\n|\r/g, '\n');
   links = Object.create(null);
+  defCount = 0;
   queue = [];
   top = true;
   inLink = false;
@@ -304,6 +306,7 @@ function blockTokens(src, out, mergePara) {
           } else {
             const tag = normLabel(m[1]);
             if (!(tag in links)) {
+              defCount++;
               links[tag] = {
                 href: m[2] ? m[2].replace(/^<(.*)>$/, '$1').replace(RE_ANY_PUNCT, '$1') : '',
                 title: m[3] ? m[3].substring(1, m[3].length - 1).replace(RE_ANY_PUNCT, '$1') : m[3],
@@ -1023,6 +1026,8 @@ for (let c = 0; c < 128; c++) {
   CLS[c] = k;
 }
 
+const RE_TEXT_STOP = /([\\<!\[`*~_]|[hH][tT][tT][pP]|[fF][tT][pP]:\/\/)|(www\.)|[^ ] {2,}\n|[^a-zA-Z0-9](?:mailto|xmpp):/g;
+
 /**
  * End of the inline text token marked's gfm `text` rule matches at p. `at` is the index of the next
  * "@" at or after p (-1 when there is none), which lets the email look-aheads be skipped.
@@ -1039,32 +1044,44 @@ function textEnd(s, p, at) {
   if (c === 96 || c === 126) return q;
   if (c === 32 && spacesNl(s, q)) return q;
   if (at !== -1 && emailAhead(s, q)) return q;
+  // The lazy part: the first q >= q0 where marked's text rule may stop. Group 1: stop before q
+  // (special character, "http", "ftp://"); group 2: "www." (stop before it when the character in
+  // front is blank or one of * _ ~ (); otherwise the match is "x  \n" or "xmailto:" / "xxmpp:"
+  // and the stop is after the first character.
+  const q0 = q;
+  let cEnd = n;
+  RE_TEXT_STOP.lastIndex = q;
   for (;;) {
-    if (q >= n) return q;
-    c = s.charCodeAt(q);
-    const k = c < 128 ? CLS[c] : 0;
-    if (k & (C_STOP | C_CHECK)) {
-      if (k & C_STOP) return q;
-      if (c === 104 || c === 72) {
-        if ((s.charCodeAt(q + 1) | 32) === 116 && (s.charCodeAt(q + 2) | 32) === 116 && (s.charCodeAt(q + 3) | 32) === 112) return q;
-      } else if (c === 102 || c === 70) {
-        if ((s.charCodeAt(q + 1) | 32) === 116 && (s.charCodeAt(q + 2) | 32) === 112 && s.startsWith('://', q + 3)) return q;
-      } else if (s.startsWith('www.', q)) {
-        const b = s.charCodeAt(q - 1);
-        if (isJsSpace(b) || b === 42 || b === 95 || b === 126 || b === 40) return q;
+    const m = RE_TEXT_STOP.exec(s);
+    if (m === null) break;
+    const i = m.index;
+    if (m[1] !== undefined) cEnd = i;
+    else if (m[2] !== undefined) {
+      const b = s.charCodeAt(i - 1);
+      if (!(isJsSpace(b) || b === 42 || b === 95 || b === 126 || b === 40)) {
+        RE_TEXT_STOP.lastIndex = i + 1;
+        continue;
       }
-    }
-    const d = s.charCodeAt(q + 1);
-    if (d === 32 && c !== 32 && spacesNl(s, q + 1)) return q + 1;
-    if (!(k & C_ALNUM)) {
-      if ((d === 109 || d === 120) && protoAhead(s, q + 1)) return q + 1;
-      if (!(k & C_EMAIL) && at !== -1) {
-        if (at <= q) at = s.indexOf('@', q + 1);
-        if (at !== -1 && emailAhead(s, q + 1)) return q + 1;
-      }
-    }
-    q++;
+      cEnd = i;
+    } else cEnd = i + 1;
+    break;
   }
+  if (at === -1) return cEnd;
+  // "[^email](?=email+@)": before an "@" the only such stop is right after the last non-email
+  // character in front of the email run that ends at the "@".
+  let a = at >= q0 ? at : s.indexOf('@', q0);
+  while (a !== -1) {
+    let r0 = a;
+    while (r0 > q0) {
+      const e = s.charCodeAt(r0 - 1);
+      if (e >= 128 || !(CLS[e] & C_EMAIL)) break;
+      r0--;
+    }
+    if (r0 < a) return r0 < cEnd ? r0 : cEnd;
+    if (a >= cEnd) return cEnd;
+    a = s.indexOf('@', a + 1);
+  }
+  return cEnd;
 }
 
 function isPunctSpace(ch) {
@@ -1083,14 +1100,19 @@ function lastCodePoint(s, l) {
 
 /** marked's emStrongMask: hide what emphasis must not see (link text, code, tags, escapes). */
 function maskSrc(src) {
-  // every masking rule needs one of these characters; without them the mask is the text itself
-  if (src.indexOf('[') === -1 && src.indexOf('`') === -1 && src.indexOf('\\') === -1 && src.indexOf('<') === -1) return src;
+  // every masking pass needs one of these characters; without them it leaves the text unchanged
+  const br = src.indexOf('[') !== -1;
+  const tick = src.indexOf('`') !== -1;
+  const bs = src.indexOf('\\') !== -1;
+  const lt = src.indexOf('<') !== -1;
   let t = src;
-  if (src.indexOf('[') !== -1) t = t.replace(RE_REFSEARCH, refMask);
-  t = t.replace(RE_PUNCT_OUTSIDE_CODE, (all, ticks, punct) =>
-    punct ? '+'.repeat(all.length) : ticks ? ticks + all.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : all,
-  );
-  t = t.replace(RE_BLOCKSKIP, (all) => '[' + 'a'.repeat(all.length - 2) + ']');
+  if (br && defCount > 0) t = t.replace(RE_REFSEARCH, refMask);
+  if (tick || bs) {
+    t = t.replace(RE_PUNCT_OUTSIDE_CODE, (all, ticks, punct) =>
+      punct ? '+'.repeat(all.length) : ticks ? ticks + all.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : all,
+    );
+  }
+  if (br || tick || lt) t = t.replace(RE_BLOCKSKIP, (all) => '[' + 'a'.repeat(all.length - 2) + ']');
   return t;
 }
 
