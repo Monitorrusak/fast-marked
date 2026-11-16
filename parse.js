@@ -713,6 +713,24 @@ function itemBreak(line, ci, full) {
   return false;
 }
 
+// Is s one non-blank line whose first character opens no block rule? Then marked's block lexer
+// (with paragraphs off, as inside list items) turns it into exactly one text token: no indented
+// code (no leading blank), and the fence, heading, rule, quote, list, HTML and definition rules
+// all need one of the excluded first characters; tables and setext headings need a second line.
+function oneTextLine(s) {
+  if (s.length === 0 || s.indexOf('\n') !== -1) return false;
+  const c = s.charCodeAt(0);
+  if (c < 128) {
+    if (c <= 32 || (c >= 48 && c <= 57)) return false;
+    switch (c) {
+      case 96: case 126: case 35: case 45: case 95: case 42: case 62: case 43: case 60: case 91:
+        return false;
+    }
+    return true;
+  }
+  return !isBlankStr(s);
+}
+
 // itemBreak(line, ci, true) for the line src[e, le) whose first non-space character fc is at f
 // (f - e <= ci): the same checks made by position, without cutting the line out of src.
 function itemBreakAt(src, e, f, fc, le, ci) {
@@ -853,7 +871,13 @@ function list(src, pos) {
   lst.raw = src.slice(pos, e).trimEnd();
   for (const it of lst.items) {
     top = false;
-    blockTokens(it.text, it.tokens, false);
+    if (oneTextLine(it.text)) {
+      // what blockTokens returns for it: a single text token (and it leaves top set)
+      const b = new Block(T_TEXT, it.text);
+      b.q = newQ(it.text);
+      it.tokens.push(b);
+      top = true;
+    } else blockTokens(it.text, it.tokens, false);
     if (!lst.loose) {
       let loose = false;
       for (const tk of it.tokens) if (tk.type === T_SPACE && /\n.*\n/.test(tk.raw)) loose = true;
