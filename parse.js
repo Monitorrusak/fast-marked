@@ -72,10 +72,7 @@ const indexFor = (r) => Math.max(0, Math.min(3, r - 1));
 // inline
 const P0 = R`[\p{P}\p{S}]`;
 const PS0 = R`[\s\p{P}\p{S}]`;
-const NPS0 = R`[^\s\p{P}\p{S}]`;
 const PT = R`(?!~)[\p{P}\p{S}]`;
-const PST = R`(?!~)[\s\p{P}\p{S}]`;
-const NPST = R`(?:[^\s\p{P}\p{S}]|~)`;
 
 const BT = '`';
 const LABEL = R`(?:\[(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|${BT}+(?!${BT})[^${BT}]*?${BT}+(?!${BT})|${BT}${BT}+(?=\])|[^\[\]\\${BT}])*?`;
@@ -667,7 +664,6 @@ function blockquote(src) {
   return { type: 'blockquote', raw, tokens, text };
 }
 
-const RE_LEADING_WS = /^[ \t]+/;
 const RE_BLANK_LINE = /^[ \t]*$/;
 const RE_TASK = /^\[[ xX]\][ \t]+\S/;
 const RE_TASK_STRIP = /^\[[ xX]\][ \t]+/;
@@ -1243,15 +1239,6 @@ function codePoints(s) {
     }
   }
   return n;
-}
-/** Length in code units of the first code point of s. */
-function firstCodePointLength(s) {
-  const c = s.charCodeAt(0);
-  if (c >= 0xd800 && c <= 0xdbff) {
-    const d = s.charCodeAt(1);
-    if (d >= 0xdc00 && d <= 0xdfff) return 2;
-  }
-  return 1;
 }
 
 function lexInline(src, textMode, features) {
