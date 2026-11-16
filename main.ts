@@ -10,8 +10,11 @@ import { setFlagsFromString } from 'node:v8';
 // tier. This only changes how V8 tiers code, never what parse() returns. It must run before
 // parse.js is loaded, hence the dynamic import below. Growing the young generation faster than the
 // default (x2) means fewer scavenges while the heap fills with short-lived strings.
+// Regular expressions are compiled straight to native code instead of first being compiled to and
+// run as bytecode: most of ours run often, so the interpreter stage only adds a second compile.
 setFlagsFromString('--no-turbofan');
 setFlagsFromString('--semi-space-growth-factor=4');
+setFlagsFromString('--no-regexp-tier-up');
 const { parse } = (await import('./parse.js')) as { parse: (md: string) => string };
 
 const inDir: string = process.env.MAKEFUN_INPUT_DIR || '/input';
