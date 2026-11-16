@@ -59,6 +59,19 @@ function blockSoup() {
   return lines.join(rnd() < 0.1 ? '\r\n' : '\n') + (rnd() < 0.7 ? '\n' : '');
 }
 
+// a table, then lines that may or may not end its body
+const ROW_LINES = ['| 1 | 2 |', 'a | b', 'x', '', ' ', '   ', '\t', ' \t', '    code', '   \tx', '\tx', '1. x', '1) x', '2. x', '1.x', '- x', '-x', '+ x', '* x', '*x', '> q',
+  '>q', '   > q', '# h', '#h', '####### h', '```', '``` js', '~~~', '<div>', '<div', '</div>', '<!-- c', '<?x', '<!X', '<![CDATA[', '<span>', '***', '___', '---',
+  '- - -', 'a b', 'p ', '| x \\| y |', '|', '||', ':-:', '=='];
+function tableSoup() {
+  const head = pick(['| a | b |', 'a | b', '|a|', 'x|y|z', '  | h1 | h2 |']);
+  const delim = pick(['|---|---|', '--- | ---', '|:-|', ':-:|--:|---', '|---|', '   |-|-|']);
+  const lines = [head, delim];
+  const n = int(6);
+  for (let i = 0; i < n; i++) lines.push(pick(ROW_LINES));
+  return (rnd() < 0.3 ? pick(['para', '', '# t']) + '\n' : '') + lines.join('\n') + (rnd() < 0.6 ? '\n' : '') + (rnd() < 0.3 ? '\npara after' : '');
+}
+
 function mutate(s) {
   const ops = 1 + int(4);
   for (let k = 0; k < ops; k++) {
@@ -86,8 +99,9 @@ const t0 = Date.now();
 for (let i = 0; i < count; i++) {
   const r = rnd();
   let md;
-  if (r < 0.3) md = inlineSoup(1 + int(25));
-  else if (r < 0.55) md = blockSoup();
+  if (r < 0.25) md = inlineSoup(1 + int(25));
+  else if (r < 0.4) md = blockSoup();
+  else if (r < 0.55) md = tableSoup();
   else if (r < 0.8 || docs.length === 0) md = mutate(pick(examples));
   else md = docSlice();
   let want, got;

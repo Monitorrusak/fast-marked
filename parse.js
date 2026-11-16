@@ -20,7 +20,6 @@ const HR_NC = R` {0,3}(?:(?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+
 const HEAD_OPEN = R` {0,3}#{1,6}(?:\s|$)`;
 const FENCE_OPEN = R` {0,3}(?:\x60{3,}(?=[^\x60\n]*(?:\n|$))|~~~)[^\n]*(?:\n|$)`;
 const HTML_OPEN = R` {0,3}(?:<\/?(?:${TAGS})(?: +|\n|\/?>)|<(?:(?:script|pre|style|textarea)(?:[\s>]|$)|!--)|<\?|<![A-Za-z]|<!\[CDATA\[)`;
-const TABLE_SRC = R` *([^\n ].*)\n {0,3}((?:\| *)?:?-+:? *(?:\| *:?-+:? *)*(?:\| *)?)(?:\n((?:(?! *\n|${HR_CAP}|${HEAD_OPEN}| {0,3}>|(?: {4}| {0,3}\t)[^\n]|${FENCE_OPEN}| {0,3}(?:[*+-]|1[.)])[ \t]|${HTML_OPEN}).*(?:\n|$))*)\n*|$)`;
 const BQ_PARA = R`[^\n]+(?:\n(?!${HR_CAP}|${HEAD_OPEN}| {0,3}>|${FENCE_OPEN}| {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]|\n|$)|${HTML_OPEN}|[ \t]+\n)[^\n]+)*`;
 const LH_BULL = R` {0,3}(?:[*+-]|\d{1,9}[.)]) `;
 const LH_FENCE = R` {0,3}(?:\x60{3,}|~{3,})`;
@@ -37,7 +36,8 @@ const RE_BQ = new RegExp(R`(?: {0,3}> ?(?:(?![ \t]*(?:\n|$))${BQ_PARA}|[^\n]*)(?
 const RE_LIST = /( {0,3}(?:[*+-]|\d{1,9}[.)]))([ \t][^\n]*?)?(?:\n|$)/y;
 const RE_HTML = new RegExp(R` {0,3}(?:<(script|pre|style|textarea)[\s>][\s\S]*?(?:<\/\1>[^\n]*\n*|$)|<!--(?:-?>|[\s\S]*?(?:-->|$))[^\n]*(\n+|$)|<\?[\s\S]*?(?:\?>[^\n]*\n*|$)|<![A-Z][\s\S]*?(?:>[^\n]*\n*|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>[^\n]*\n*|$)|<\/?(${TAGS})(?:[ \t]+|\n|\/?>|$)[\s\S]*?(?:(?:\n[ \t]*)+\n|$)|<(?!(?:script|pre|style|textarea)(?![a-z0-9-]))([a-z][a-z0-9-]*)(?: +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>\x60]+)?)*? *\/?>(?=[ \t]*(?:\n|$))[\s\S]*?(?:(?:\n[ \t]*)+\n|$)|<\/[a-z][a-z0-9-]*\s*>(?=[ \t]*(?:\n|$))[\s\S]*?(?:(?:\n[ \t]*)+\n|$))`, 'iy');
 const RE_DEF = new RegExp(R` {0,3}\[((?!\s*\])(?:\\[\s\S]|[^\[\]\\\n]|\n(?![ \t]*\n))+)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)((?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\\n]|\n(?!\n))*'|\((?:\\[\s\S]|[^()\\])*\))))? *(?:\n+|$)`, 'y');
-const RE_TABLE = new RegExp(TABLE_SRC, 'y');
+// header line and delimiter row of marked's table rule (the body is scanned by hand, see table())
+const RE_TABLE_HEAD = / *([^\n ].*)\n {0,3}((?:\| *)?:?-+:? *(?:\| *:?-+:? *)*(?:\| *)?)(?=\n|$)/y;
 const RE_LHEADING = new RegExp(LHEAD_SRC, 'y');
 const RE_LHEADING_A = new RegExp('^' + LHEAD_SRC);
 
@@ -523,8 +523,8 @@ function paraBreak(src, ls) {
     while (k < lim && (k < src.length ? src.charCodeAt(k) : -1) === 32) k++;
     const d = (k < src.length ? src.charCodeAt(k) : -1);
     if (d === 124 || d === 58 || d === 45) {
-      RE_TABLE.lastIndex = ls;
-      if (RE_TABLE.test(src)) return true;
+      RE_TABLE_HEAD.lastIndex = ls; // (the body part of the table rule always matches)
+      if (RE_TABLE_HEAD.test(src)) return true;
     }
   }
   return false;
@@ -952,18 +952,91 @@ function splitCells(row, count) {
   return cells;
 }
 
+// Is there a character "." does not match (other than "\n") in src[p, e)?
+function hasLineSeparator(src, p, e) {
+  for (let i = p; i < e; i++) {
+    const c = src.charCodeAt(i);
+    if (c === 0x2028 || c === 0x2029 || c === 13) return true;
+  }
+  return false;
+}
+
+// Does the line at ls stop a table's body? marked's row look-ahead: a line of spaces only, a
+// rule, an ATX heading, ">", indented code, a fence, a list marker ("*", "+", "-", "1." or "1)")
+// with a blank after it, or an HTML block opener.
+function rowBreak(src, ls) {
+  const n = src.length;
+  let i = ls;
+  while (i < n && src.charCodeAt(i) === 32) i++;
+  const c = i < n ? src.charCodeAt(i) : -1;
+  if (c === 10) return true; // " *\n"
+  const sp = i - ls;
+  if (sp >= 4) return c !== -1; // (?: {4})[^\n]
+  if (c === 9) return i + 1 < n && src.charCodeAt(i + 1) !== 10; // (?: {0,3}\t)[^\n]
+  switch (c) {
+    case 62:
+      return true;
+    case 35:
+      return headingOpensAt(src, i);
+    case 96:
+    case 126:
+      RE_FENCE_OPEN.lastIndex = ls;
+      return RE_FENCE_OPEN.test(src);
+    case 60:
+      RE_HTML_OPEN.lastIndex = ls;
+      return RE_HTML_OPEN.test(src);
+    case 42:
+    case 43:
+    case 45:
+    case 95: {
+      if (c !== 95) {
+        const d = i + 1 < n ? src.charCodeAt(i + 1) : -1;
+        if (d === 32 || d === 9) return true;
+      }
+      if (c === 43) return false;
+      RE_HR.lastIndex = ls;
+      return RE_HR.test(src);
+    }
+    case 49: {
+      const d = i + 1 < n ? src.charCodeAt(i + 1) : -1;
+      if (d !== 46 && d !== 41) return false;
+      const e = i + 2 < n ? src.charCodeAt(i + 2) : -1;
+      return e === 32 || e === 9;
+    }
+  }
+  return false;
+}
+
 function table(src, pos) {
-  RE_TABLE.lastIndex = pos;
-  const m = RE_TABLE.exec(src);
+  RE_TABLE_HEAD.lastIndex = pos;
+  const m = RE_TABLE_HEAD.exec(src);
   if (m === null || !/[:|]/.test(m[2])) return null;
   const head = splitCells(m[1]);
   const aligns = m[2].replace(/^\||\| *$/g, '').split('|');
   if (head.length !== aligns.length) return null;
-  const rows = m[3] && m[3].trim() ? m[3].replace(/\n[ \t]*$/, '').split('\n') : [];
+  // The body: after the delimiter row's newline, every line that no row look-ahead stops (and
+  // that holds no line separator, which "." cannot cross), then any newlines after them.
+  const n = src.length;
+  let end = RE_TABLE_HEAD.lastIndex;
+  let bodyText = '';
+  if (end < n) {
+    const start = end + 1;
+    let p = start;
+    while (p < n && !rowBreak(src, p)) {
+      let le = src.indexOf('\n', p);
+      if (le === -1) le = n;
+      if (hasLineSeparator(src, p, le)) break;
+      p = le < n ? le + 1 : n;
+    }
+    bodyText = src.slice(start, p);
+    end = p;
+    while (end < n && src.charCodeAt(end) === 10) end++;
+  }
+  const rows = bodyText && bodyText.trim() ? bodyText.replace(/\n[ \t]*$/, '').split('\n') : [];
   const align = aligns.map((a) => (/^ *-+: *$/.test(a) ? 'right' : /^ *:-+: *$/.test(a) ? 'center' : /^ *:-+ *$/.test(a) ? 'left' : null));
   const header = head.map((h) => newQ(h));
   const body = rows.map((r) => splitCells(r, head.length).map((c) => newQ(c)));
-  const b = new Block(T_TABLE, rtrimChar(m[0], '\n'));
+  const b = new Block(T_TABLE, rtrimChar(src.slice(pos, end), '\n'));
   b.align = align;
   b.header = header;
   b.body = body;
